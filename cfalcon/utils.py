@@ -67,53 +67,71 @@ def extract_vocabulary(axiom_list: List[str]) -> Tuple[Set[str], Set[str], Set[s
     roles = set()
     individuals = set()
 
-    # Patterns to identify context
-    class_assertion_match = re.compile(r"ClassAssertion\((.*)\s+([^)]+)\)")
-    obj_prop_assertion_match = re.compile(r"ObjectPropertyAssertion\(([^ ]+)\s+([^ ]+)\s+([^)]+)\)")
-    # Patterns for quantifiers (identifying roles and concepts within)
-    some_values_match = re.compile(r"ObjectSomeValuesFrom\(([^ ]+)\s+(.*)\)")
-    all_values_match = re.compile(r"ObjectAllValuesFrom\(([^ ]+)\s+(.*)\)")
-    # SubClassOf, EquivalentClasses, DisjointClasses primarily involve concepts
-    # SubObjectPropertyOf involves roles
-    sub_prop_match = re.compile(r"SubObjectPropertyOf\(([^ ]+)\s+([^)]+)\)")
-    # DifferentIndividuals involves individuals
+    # Patterns to identify context (using simplified regex for names/IRIs)
+    # Match names like <...>, owl:Thing, prefix:name, :name
+    entity_pattern = r"(?:<[^>]+>|owl:Thing|owl:Nothing|\b\w+:\w+\b|\b:\w+\b)"
+    # Match potentially complex nested class expressions or single entities
+    # This is tricky - simplified: match balanced parentheses or single entity
+    # A more robust parser would be better here.
+    class_expr_pattern = r"(?:\w+\s*\(.*\)|" + entity_pattern + ")" # Match Constructor(...) or single entity
+
+    # Regexes for specific axiom/constructor types
+    class_assertion_match = re.compile(r"ClassAssertion\(" + class_expr_pattern + r"\s+(" + entity_pattern + r")\)")
+    obj_prop_assertion_match = re.compile(r"ObjectPropertyAssertion\((" + entity_pattern + r")\s+(" + entity_pattern + r")\s+(" + entity_pattern + r")\)")
+    some_values_match = re.compile(r"ObjectSomeValuesFrom\((" + entity_pattern + r")\s+" + class_expr_pattern + r"\)")
+    all_values_match = re.compile(r"ObjectAllValuesFrom\((" + entity_pattern + r")\s+" + class_expr_pattern + r"\)")
+    has_value_match = re.compile(r"ObjectHasValue\((" + entity_pattern + r")\s+(" + entity_pattern + r")\)") # Added for ObjectHasValue
+    sub_prop_match = re.compile(r"SubObjectPropertyOf\((" + entity_pattern + r")\s+(" + entity_pattern + r")\)")
     diff_ind_match = re.compile(r"DifferentIndividuals\((.*)\)")
+    one_of_match = re.compile(r"ObjectOneOf\((.*)\)") # Added for ObjectOneOf
 
     for axiom in axiom_list:
-        # Find all potential entities (IRIs, owl:Thing, owl:Nothing)
+        # Find all potential entities (IRIs, owl:Thing, owl:Nothing, prefixed names)
         all_entities = set(ENTITY_RE.findall(axiom))
 
-        # Try to determine context
+        # Try to determine context using specific patterns first
         ca_match = class_assertion_match.search(axiom)
         opa_match = obj_prop_assertion_match.search(axiom)
         svf_match = some_values_match.search(axiom)
         avf_match = all_values_match.search(axiom)
+        hv_match = has_value_match.search(axiom) # Check for ObjectHasValue
         sp_match = sub_prop_match.search(axiom)
         di_match = diff_ind_match.search(axiom)
+        oo_match = one_of_match.search(axiom) # Check for ObjectOneOf
 
         if ca_match:
-            # Argument 1 is a class expression, Argument 2 is an individual
-            individuals.add(ca_match.group(2).strip())
-            # Concepts within the class expression are handled below
+            # Argument 2 is an individual
+            individuals.add(ca_match.group(1).strip()) # Group 1 is the individual in this simplified regex
+            # Concepts within the class expression (arg 1) are handled by the general sweep below
         elif opa_match:
             # Argument 1 is a role, Arguments 2 and 3 are individuals
             roles.add(opa_match.group(1).strip())
             individuals.add(opa_match.group(2).strip())
             individuals.add(opa_match.group(3).strip())
         elif svf_match:
-            # Argument 1 is a role, Argument 2 is a class expression
+            # Argument 1 is a role
             roles.add(svf_match.group(1).strip())
         elif avf_match:
-            # Argument 1 is a role, Argument 2 is a class expression
+            # Argument 1 is a role
             roles.add(avf_match.group(1).strip())
+        elif hv_match:
+            # Argument 1 is a role, Argument 2 is an individual
+            roles.add(hv_match.group(1).strip())
+            individuals.add(hv_match.group(2).strip())
         elif sp_match:
             # Both arguments are roles
             roles.add(sp_match.group(1).strip())
             roles.add(sp_match.group(2).strip())
         elif di_match:
             # All arguments are individuals
-            ind_args = di_match.group(1).strip().split()
-            individuals.update(ind_args)
+            # Use the simpler ENTITY_RE to find individuals within the args
+            ind_args = ENTITY_RE.findall(di_match.group(1))
+            individuals.update(ind.strip() for ind in ind_args)
+        elif oo_match:
+             # All arguments are individuals
+             ind_args = ENTITY_RE.findall(oo_match.group(1))
+             individuals.update(ind.strip() for ind in ind_args)
+
 
         # Assume remaining entities found are concepts unless identified as roles/individuals
         # This is an approximation. A full parser would be needed for perfect accuracy.
@@ -121,7 +139,7 @@ def extract_vocabulary(axiom_list: List[str]) -> Tuple[Set[str], Set[str], Set[s
         concepts.update(potential_concepts)
 
 
-    # Clean up potential misclassifications (e.g., if owl:Thing was somehow added to roles)
+    # Clean up potential misclassifications (e.g., if owl:Thing was somehow added to roles/individuals)
     individuals.discard('owl:Thing')
     individuals.discard('owl:Nothing')
     roles.discard('owl:Thing')
