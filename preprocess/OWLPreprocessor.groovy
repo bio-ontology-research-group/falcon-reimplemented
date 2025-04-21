@@ -11,7 +11,7 @@ import org.semanticweb.owlapi.formats.FunctionalSyntaxDocumentFormat
 import org.semanticweb.owlapi.model.*
 import org.semanticweb.owlapi.profiles.*
 import org.semanticweb.owlapi.util.*
-import org.semanticweb.owlapi.io.*
+import org.semanticweb.owlapi.io.* // Contains FileDocumentSource
 import org.semanticweb.owlapi.model.parameters.Imports
 import org.semanticweb.owlapi.search.*
 import org.semanticweb.owlapi.normalform.*
@@ -96,7 +96,8 @@ try {
     // Increase robustness by allowing different parsers based on format
     OWLOntologyLoaderConfiguration config = new OWLOntologyLoaderConfiguration()
     config = config.setMissingImportHandlingStrategy(MissingImportHandlingStrategy.SILENT) // Handle missing imports gracefully
-    ont = manager.loadOntologyFromOntologyDocument(ontologyFile, config)
+    // *** CHANGE HERE: Wrap the File in a FileDocumentSource ***
+    ont = manager.loadOntologyFromOntologyDocument(new FileDocumentSource(ontologyFile), config)
     println "Ontology loaded successfully. IRI: ${ont.getOntologyID().getOntologyIRI().orNull()}"
 } catch (Exception e) {
     println "Error loading ontology: ${e.message}"
