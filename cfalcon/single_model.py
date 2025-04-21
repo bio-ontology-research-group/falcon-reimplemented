@@ -359,6 +359,23 @@ class FuzzyOWLModel(nn.Module):
                 role_relation = self._get_role_fuzzy_relation(role_idx)
                 concept_fs = self.forward(class_expr)
                 return self._get_universal_restriction(role_relation, concept_fs)
+            elif constructor == "ObjectOneOf":
+                # Defines a class by enumerating individuals {i1, i2, ...}
+                if self.num_individuals == 0: return torch.empty(0, device=self.device)
+                if not args: raise ValueError(f"ObjectOneOf expects at least 1 argument, got 0 in '{axiom_str}'")
+
+                # Create a fuzzy set that is 1 for listed individuals, 0 otherwise
+                fuzzy_set = torch.zeros(self.num_individuals, device=self.device)
+                individual_indices = []
+                for ind_name in args:
+                    if ind_name not in self.individual_to_idx:
+                        raise ValueError(f"Unknown individual in ObjectOneOf: {ind_name}")
+                    individual_indices.append(self.individual_to_idx[ind_name])
+
+                if individual_indices: # Check if any valid individuals were found
+                    fuzzy_set[torch.tensor(individual_indices, dtype=torch.long, device=self.device)] = 1.0
+                return fuzzy_set
+
             # TODO: Add ObjectHasValue, Cardinality Restrictions if needed
 
             # --- Standard Axioms (Return Scalar Truth Value) ---
@@ -448,7 +465,7 @@ if __name__ == '__main__':
     # 1. Define Vocabulary Mappings (Example)
     concepts = {"<urn:A>": 0, "<urn:B>": 1, "<urn:C>": 2, "<urn:D>": 3, "owl:Thing": 4, "owl:Nothing": 5}
     roles = {"<urn:r>": 0}
-    individuals = {"<urn:i>": 0, "<urn:j>": 1}
+    individuals = {"<urn:i>": 0, "<urn:j>": 1, "<urn:k>": 2} # Added k
 
     num_concepts = len(concepts)
     num_roles = len(roles)
@@ -480,6 +497,7 @@ if __name__ == '__main__':
     # Class Expression
     class_expr_intersect = "ObjectIntersectionOf(<urn:A> <urn:B> <urn:C>)" # N-ary example
     class_expr_union = "ObjectUnionOf(<urn:A> <urn:B> <urn:C> <urn:D>)" # N-ary example
+    class_expr_oneof = "ObjectOneOf(<urn:i> <urn:k>)" # OneOf example
 
 
     # 4. Evaluate Axioms and Expressions
@@ -495,6 +513,7 @@ if __name__ == '__main__':
         tv_nnf_disjoint_nary = model(axiom_nnf_disjoint_nary)
         fs_intersect = model(class_expr_intersect)
         fs_union = model(class_expr_union)
+        fs_oneof = model(class_expr_oneof) # Evaluate OneOf
 
     print(f"Axiom: {axiom_subclass} -> Truth: {tv_subclass.item():.4f}")
     print(f"Axiom: {axiom_equiv} -> Truth: {tv_equiv.item():.4f}")
@@ -507,3 +526,4 @@ if __name__ == '__main__':
     print(f"Axiom (NNF): {axiom_nnf_disjoint_nary} -> Truth: {tv_nnf_disjoint_nary.item():.4f}")
     print(f"Class Expr: {class_expr_intersect} -> Fuzzy Set (shape {fs_intersect.shape}): {fs_intersect.cpu().numpy()}")
     print(f"Class Expr: {class_expr_union} -> Fuzzy Set (shape {fs_union.shape}): {fs_union.cpu().numpy()}")
+    print(f"Class Expr: {class_expr_oneof} -> Fuzzy Set (shape {fs_oneof.shape}): {fs_oneof.cpu().numpy()}") # Print OneOf result
