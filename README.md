@@ -2,17 +2,16 @@
 
 ## Requirements
 
-- Python packages
-    * python == 3.8.5
-    * torch == 1.8.1
-    * numpy == 1.19.2
-    * pandas == 1.0.1
-    * tqdm == 4.61.0
-
-- Others
-    * groovy == 4.0.0
-    * JVM == 1.8.0_333
-    * Protégé (https://protege.stanford.edu/)
+- **Python**: 3.10 or higher recommended.
+- **Python Packages**: Install required packages using pip:
+  ```bash
+  pip install -r requirements.txt
+  ```
+  *Note on PyTorch*: The `requirements.txt` file lists `torch==2.1.0`. You might need to install a specific version compatible with your hardware (CPU or CUDA version). Please refer to the official PyTorch installation guide: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
+- **Other Tools**:
+    * groovy == 4.0.0 (or compatible)
+    * JVM == 1.8.0_333 (or compatible Java 8+)
+    * Protégé (https://protege.stanford.edu/) - For data preparation steps.
 
 
 ## Run
@@ -22,7 +21,7 @@
     > `python family.py`
 - Pizza Ontology
     > `cd ./code/model`
-    
+
     > `python pizza.py`
 - Human Phenotype Ontology
     > `cd ./data/HPO/ && unzip BIOGRID-ALL-4.4.211.tab.zip && cd ../../code/model`
@@ -30,7 +29,7 @@
     > `sh run_hpo.sh`
 
 ## Data Preparation
-We elaborate the steps of data preparation to foster further research. This section is unnecessary for running the experiments. 
+We elaborate the steps of data preparation to foster further research. This section is unnecessary for running the experiments.
 - Human Phenotype Ontology
     - Download datasets
         > `cd ./data/HPO/`
@@ -39,19 +38,19 @@ We elaborate the steps of data preparation to foster further research. This sect
 
         > `wget https://downloads.thebiogrid.org/File/BioGRID/Release-Archive/BIOGRID-4.4.211/BIOGRID-ALL-4.4.211.tab.zip`
 
-        > `unzip ./data/HPO/BIOGRID-ALL-4.4.211.tab.zip`
-        
+        > `unzip ./BIOGRID-ALL-4.4.211.tab.zip` # Adjusted path assuming unzip in current dir
+
         > `wget http://purl.obolibrary.org/obo/hp/hpoa/genes_to_phenotype.txt`
     - Semantic Entailment (Generating the True Testing Axioms)
-        > Open `hp.owl` with the graphical interface of `Protégé` 
+        > Open `hp.owl` with the graphical interface of `Protégé`
 
         > Select `ELK` as the logical reasoner
 
         > Save the inferred ontology as `hpInferred.owl`
     - OWL to Axioms
-        > `groovy ./code/ppc/GetTBox.groovy ./data/HPO/hp.owl > ./data/HPO/TBox.txt`
+        > `groovy ../../code/ppc/GetTBox.groovy ./hp.owl > ./TBox.txt` # Adjusted path
 
-        > `groovy ./code/ppc/GetTBox.groovy ./data/HPO/hpInferred.owl > ./data/HPO/TBoxInferred.txt`
+        > `groovy ../../code/ppc/GetTBox.groovy ./hpInferred.owl > ./TBoxInferred.txt` # Adjusted path
 
 - Pizza Ontology
     - Download datasets
@@ -60,13 +59,13 @@ We elaborate the steps of data preparation to foster further research. This sect
         > `wget https://protege.stanford.edu/ontologies/pizza/pizza.owl`
 
     - Semantic Entailment (Generating the True Testing Axioms)
-        > Open `pizza.owl` with the graphical interface of `Protégé` 
+        > Open `pizza.owl` with the graphical interface of `Protégé`
 
         > Select `HermiT` as the logical reasoner
 
         > Save the inferred ontology as `pizzaInferred.owl`
 
     - OWL to Axioms
-        > `groovy ./code/ppc/GetTBox.groovy ./data/Pizza/pizza.owl > ./data/Pizza/pizzaTBox.txt`
+        > `groovy ../../code/ppc/GetTBox.groovy ./pizza.owl > ./pizzaTBox.txt` # Adjusted path
 
-        > `groovy ./code/ppc/GetTBox.groovy ./data/Pizza/pizzaInferred.owl > ./data/Pizza/pizzaTBoxInferred.txt`
+        > `groovy ../../code/ppc/GetTBox.groovy ./pizzaInferred.owl > ./pizzaTBoxInferred.txt` # Adjusted path
