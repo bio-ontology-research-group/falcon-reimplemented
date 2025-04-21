@@ -375,8 +375,27 @@ class FuzzyOWLModel(nn.Module):
                 if individual_indices: # Check if any valid individuals were found
                     fuzzy_set[torch.tensor(individual_indices, dtype=torch.long, device=self.device)] = 1.0
                 return fuzzy_set
+            elif constructor == "ObjectHasValue":
+                # Defines the class {x | R(x, i)}
+                if len(args) != 2: raise ValueError(f"ObjectHasValue expects 2 arguments, got {len(args)} in '{axiom_str}'")
+                role_name = args[0]
+                individual_name = args[1]
+                if self.num_individuals == 0: return torch.empty(0, device=self.device)
+                if role_name not in self.role_to_idx: raise ValueError(f"Unknown role: {role_name}")
+                if individual_name not in self.individual_to_idx: raise ValueError(f"Unknown individual: {individual_name}")
 
-            # TODO: Add ObjectHasValue, Cardinality Restrictions if needed
+                role_idx = self.role_to_idx[role_name]
+                ind_idx = self.individual_to_idx[individual_name]
+
+                # Get the fuzzy relation R(x, y)
+                role_relation = self._get_role_fuzzy_relation(role_idx) # Shape [num_ind, num_ind]
+
+                # The fuzzy set is the column corresponding to the individual 'i'
+                # This represents the membership R(x, i) for all x
+                fuzzy_set = role_relation[:, ind_idx] # Shape [num_ind]
+                return fuzzy_set
+
+            # TODO: Add Cardinality Restrictions if needed
 
             # --- Standard Axioms (Return Scalar Truth Value) ---
             elif constructor == "SubClassOf":
@@ -485,6 +504,7 @@ if __name__ == '__main__':
     axiom_class_assert = "ClassAssertion(<urn:A> <urn:i>)"
     axiom_prop_assert = "ObjectPropertyAssertion(<urn:r> <urn:i> <urn:j>)"
     axiom_some = "SubClassOf(<urn:A> ObjectSomeValuesFrom(<urn:r> <urn:B>))"
+    axiom_hasval_subclass = "SubClassOf(<urn:A> ObjectHasValue(<urn:r> <urn:j>))" # HasValue example
 
     # Axiom representing SubClassOf(<urn:A>, <urn:B>) in NNF
     axiom_nnf_subclass = "ObjectIntersectionOf(<urn:A> ObjectComplementOf(<urn:B>))"
@@ -498,6 +518,7 @@ if __name__ == '__main__':
     class_expr_intersect = "ObjectIntersectionOf(<urn:A> <urn:B> <urn:C>)" # N-ary example
     class_expr_union = "ObjectUnionOf(<urn:A> <urn:B> <urn:C> <urn:D>)" # N-ary example
     class_expr_oneof = "ObjectOneOf(<urn:i> <urn:k>)" # OneOf example
+    class_expr_hasval = "ObjectHasValue(<urn:r> <urn:j>)" # HasValue example
 
 
     # 4. Evaluate Axioms and Expressions
@@ -508,12 +529,14 @@ if __name__ == '__main__':
         tv_class_assert = model(axiom_class_assert)
         tv_prop_assert = model(axiom_prop_assert)
         tv_some = model(axiom_some)
+        tv_hasval_subclass = model(axiom_hasval_subclass) # Evaluate HasValue axiom
         tv_nnf_subclass = model(axiom_nnf_subclass)
         tv_nnf_disjoint = model(axiom_nnf_disjoint)
         tv_nnf_disjoint_nary = model(axiom_nnf_disjoint_nary)
         fs_intersect = model(class_expr_intersect)
         fs_union = model(class_expr_union)
-        fs_oneof = model(class_expr_oneof) # Evaluate OneOf
+        fs_oneof = model(class_expr_oneof)
+        fs_hasval = model(class_expr_hasval) # Evaluate HasValue expression
 
     print(f"Axiom: {axiom_subclass} -> Truth: {tv_subclass.item():.4f}")
     print(f"Axiom: {axiom_equiv} -> Truth: {tv_equiv.item():.4f}")
@@ -521,9 +544,11 @@ if __name__ == '__main__':
     print(f"Axiom: {axiom_class_assert} -> Truth: {tv_class_assert.item():.4f}")
     print(f"Axiom: {axiom_prop_assert} -> Truth: {tv_prop_assert.item():.4f}")
     print(f"Axiom: {axiom_some} -> Truth: {tv_some.item():.4f}")
+    print(f"Axiom: {axiom_hasval_subclass} -> Truth: {tv_hasval_subclass.item():.4f}")
     print(f"Axiom (NNF): {axiom_nnf_subclass} -> Truth: {tv_nnf_subclass.item():.4f}")
     print(f"Axiom (NNF): {axiom_nnf_disjoint} -> Truth: {tv_nnf_disjoint.item():.4f}")
     print(f"Axiom (NNF): {axiom_nnf_disjoint_nary} -> Truth: {tv_nnf_disjoint_nary.item():.4f}")
     print(f"Class Expr: {class_expr_intersect} -> Fuzzy Set (shape {fs_intersect.shape}): {fs_intersect.cpu().numpy()}")
     print(f"Class Expr: {class_expr_union} -> Fuzzy Set (shape {fs_union.shape}): {fs_union.cpu().numpy()}")
-    print(f"Class Expr: {class_expr_oneof} -> Fuzzy Set (shape {fs_oneof.shape}): {fs_oneof.cpu().numpy()}") # Print OneOf result
+    print(f"Class Expr: {class_expr_oneof} -> Fuzzy Set (shape {fs_oneof.shape}): {fs_oneof.cpu().numpy()}")
+    print(f"Class Expr: {class_expr_hasval} -> Fuzzy Set (shape {fs_hasval.shape}): {fs_hasval.cpu().numpy()}") # Print HasValue result
