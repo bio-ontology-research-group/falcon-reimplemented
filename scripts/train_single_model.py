@@ -29,7 +29,8 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=32, help='Number of axioms to process before optimizer step.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--device', type=str, default='auto', help='Device to use (cpu, cuda, or auto).')
-    parser.add_argument('--output_membership_filename', type=str, default='membership_matrix.csv', help='Filename for the output membership matrix CSV within the output directory.')
+    parser.add_argument('--output_membership_filename', type=str, default='membership_matrix', help='Base filename for the output membership matrix (extension .csv or .tsv added automatically).')
+    parser.add_argument('--membership_format', type=str, default='csv', choices=['csv', 'tsv'], help='Format for the output membership matrix.')
 
     return parser.parse_args()
 
@@ -248,15 +249,23 @@ def main():
             membership_df = pd.DataFrame(membership_data, index=individual_list)
             membership_df.index.name = 'Individual'
 
-            # Save to CSV
-            membership_save_path = output_dir / args.output_membership_filename
+            # Determine file path and separator
+            membership_save_path = output_dir / f"{args.output_membership_filename}.{args.membership_format}"
+            separator = '\t' if args.membership_format == 'tsv' else ','
+
             print(f"Saving membership matrix to {membership_save_path}...")
             try:
-                membership_df.to_csv(membership_save_path, float_format='%.4f')
-                print("Membership matrix saved.")
-                # Optionally print part of the matrix
-                print("\nMembership Matrix (sample):")
-                print(membership_df.head())
+                membership_df.to_csv(membership_save_path, sep=separator, float_format='%.4f')
+                print(f"Membership matrix saved as {args.membership_format.upper()}.")
+
+                # Optionally print part or all of the matrix
+                if args.membership_format == 'tsv':
+                    print("\nMembership Matrix (Full):")
+                    # Use to_string() to print the entire DataFrame
+                    print(membership_df.to_string())
+                else: # Default to printing head for CSV
+                    print("\nMembership Matrix (Sample):")
+                    print(membership_df.head())
 
             except Exception as e:
                 print(f"Error saving membership matrix: {e}")
