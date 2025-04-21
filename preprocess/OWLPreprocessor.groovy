@@ -1,13 +1,9 @@
 @Grab(group='org.slf4j', module='slf4j-api', version='1.7.36')
-@Grab(group='org.slf4j', module='slf4j-simple', version='1.7.36') // Added for simple logging
-@Grab(group='org.semanticweb.elk', module='elk-owlapi', version='0.4.3') // Kept if needed elsewhere, not used in this script
-@Grab(group='net.sourceforge.owlapi', module='owlapi-api', version='4.5.26') // Updated version
-@Grab(group='net.sourceforge.owlapi', module='owlapi-apibinding', version='4.5.26') // Updated version
-@Grab(group='net.sourceforge.owlapi', module='owlapi-impl', version='4.5.26') // Updated version
-@Grab(group='net.sourceforge.owlapi', module='owlapi-parsers', version='4.5.26') // Updated version
-@Grab(group='net.sourceforge.owlapi', module='owlapi-oboformat', version='4.5.26') // Added for potential OBO parsing needs
-@Grab(group='net.sourceforge.owlapi', module='owlapi-tools', version='4.5.26') // Added for profiles
-@Grab(group='net.sourceforge.owlapi', module='owlapi-rio', version='4.5.26') // Added for RDF/XML parsing etc.
+@Grab(group='org.semanticweb.elk', module='elk-owlapi', version='0.4.3')
+@Grab(group='net.sourceforge.owlapi', module='owlapi-api', version='4.5.20')
+@Grab(group='net.sourceforge.owlapi', module='owlapi-apibinding', version='4.5.20')
+@Grab(group='net.sourceforge.owlapi', module='owlapi-impl', version='4.5.20')
+@Grab(group='net.sourceforge.owlapi', module='owlapi-parsers', version='4.5.20')
 
 
 import org.semanticweb.owlapi.apibinding.OWLManager
