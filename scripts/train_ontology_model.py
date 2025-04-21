@@ -9,6 +9,7 @@ import time
 from tqdm import tqdm # For progress bar
 import numpy as np # Import numpy for seeding
 import pandas as pd # Import pandas for potential future matrix output
+import re # Import re for checking unsupported constructors
 
 # Add project root to path to import cfalcon modules
 project_root = Path(__file__).resolve().parent.parent
@@ -17,6 +18,21 @@ sys.path.append(str(project_root))
 # Import the multi-model and utility functions
 from cfalcon.model import FuzzyOntologyModel
 from cfalcon.utils import read_list_from_file, extract_vocabulary
+
+# Define known unsupported constructors (add more as needed)
+UNSUPPORTED_CONSTRUCTORS = {
+    "ObjectMinCardinality",
+    "ObjectMaxCardinality",
+    "ObjectExactCardinality",
+    "DataHasValue", # Add data property related constructors if they appear
+    "DataSomeValuesFrom",
+    "DataAllValuesFrom",
+    "DataMinCardinality",
+    "DataMaxCardinality",
+    "DataExactCardinality",
+    "DifferentIndividuals", # Keep this explicit check too
+    # Add others based on potential errors, e.g., related to datatypes
+}
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Fuzzy Ontology Model (multi-model) on TBox and ABox axioms.")
@@ -34,6 +50,15 @@ def parse_args():
     # Removed membership matrix output for now, can be added back if needed for multi-model context
 
     return parser.parse_args()
+
+def check_unsupported(axiom_str):
+    """Checks if an axiom string contains known unsupported constructors."""
+    # Simple string checking - might be too broad but avoids full parsing here
+    for constructor in UNSUPPORTED_CONSTRUCTORS:
+        # Use regex to check for the constructor name followed by '('
+        if re.search(r'\b' + re.escape(constructor) + r'\s*\(', axiom_str):
+            return True
+    return False
 
 def main():
     args = parse_args()
@@ -68,7 +93,28 @@ def main():
         print("Error: No axioms loaded. Exiting.")
         sys.exit(1)
 
+    # --- Identify Unsupported Axioms ---
+    print("Scanning for unsupported axioms...")
+    unsupported_axioms_set = set()
+    found_unsupported_types = set()
+    for axiom_str in all_axioms:
+        for constructor in UNSUPPORTED_CONSTRUCTORS:
+             if re.search(r'\b' + re.escape(constructor) + r'\s*\(', axiom_str):
+                 unsupported_axioms_set.add(axiom_str)
+                 found_unsupported_types.add(constructor)
+                 break # Move to next axiom once one unsupported constructor is found
+
+    if unsupported_axioms_set:
+        print(f"Found {len(unsupported_axioms_set)} axioms containing unsupported constructors.")
+        print(f"Unsupported constructor types found: {', '.join(sorted(list(found_unsupported_types)))}")
+        print("These axioms will be skipped during training.")
+    else:
+        print("No known unsupported constructors found in the axioms.")
+
+
     # --- Extract Vocabulary ---
+    # Extract from *all* axioms initially, even unsupported ones,
+    # to ensure entities within them are known if they appear elsewhere.
     print("Extracting vocabulary...")
     concepts, roles, individuals = extract_vocabulary(all_axioms)
     print(f"Found {len(concepts)} concepts, {len(roles)} roles, {len(individuals)} individuals.")
@@ -121,7 +167,7 @@ def main():
     print("Starting training...")
     model.train() # Set model to training mode
 
-    skipped_axioms = 0
+    other_skipped_axioms = 0 # Count axioms skipped for reasons other than unsupported constructors
     total_processed_axioms = 0
 
     for epoch in range(args.epochs):
@@ -137,27 +183,25 @@ def main():
 
         progress_bar = tqdm(all_axioms, desc=f"Epoch {epoch+1}/{args.epochs}", leave=False)
         for axiom_str in progress_bar:
-            try:
-                # Skip axioms the current parser/model cannot handle (e.g., DifferentIndividuals)
-                # Or axioms that cannot be evaluated (e.g. ABox with no individuals)
-                if axiom_str.startswith("DifferentIndividuals"):
-                     # print(f"Warning: Skipping unsupported axiom type: {axiom_str[:100]}...")
-                     skipped_axioms += 1
-                     continue
-                # Skip ABox assertions if no individuals exist (model forward handles this too, but check early)
-                if num_individuals == 0 and ("ClassAssertion" in axiom_str or "ObjectPropertyAssertion" in axiom_str):
-                    # print(f"Warning: Skipping ABox axiom due to no individuals: {axiom_str[:100]}...")
-                    skipped_axioms +=1
-                    continue
+            # --- Silent Skipping of Pre-identified Unsupported Axioms ---
+            if axiom_str in unsupported_axioms_set:
+                continue
 
+            # --- Skip ABox assertions if no individuals exist ---
+            if num_individuals == 0 and ("ClassAssertion" in axiom_str or "ObjectPropertyAssertion" in axiom_str):
+                # This check might be redundant if FuzzyOntologyModel handles it, but keep for clarity
+                other_skipped_axioms += 1
+                continue
+
+            try:
                 # Get the aggregated truth value (entailment degree) from the FuzzyOntologyModel
                 entailment_degree = model(axiom_str)
 
                 # Ensure entailment_degree is a scalar tensor for loss calculation
                 if entailment_degree.numel() != 1:
-                     # This might happen if all sub-models failed for an axiom
-                     print(f"Warning: Skipping axiom due to non-scalar aggregated output ({entailment_degree.shape}): {axiom_str[:100]}...")
-                     skipped_axioms += 1
+                     # This might happen if all sub-models failed for an axiom (e.g., unknown entity)
+                     # print(f"Warning: Skipping axiom due to non-scalar aggregated output ({entailment_degree.shape}): {axiom_str[:100]}...")
+                     other_skipped_axioms += 1
                      continue
 
                 # Clamp truth value slightly away from 0 and 1 for numerical stability with BCE
@@ -186,10 +230,10 @@ def main():
                     axioms_in_batch = 0    # Reset batch counter
 
             except (NotImplementedError, ValueError, RuntimeError, IndexError) as e:
-                # Catch errors during forward pass (parsing, unknown entities, etc.)
-                # These might originate from the underlying single models
-                # print(f"Warning: Skipping axiom due to error: {e} | Axiom: {axiom_str[:100]}...")
-                skipped_axioms += 1
+                # Catch *other* errors during forward pass (parsing, unknown entities, etc.)
+                # These should ideally not be the pre-identified unsupported constructors anymore
+                # print(f"Warning: Skipping axiom due to runtime error: {e} | Axiom: {axiom_str[:100]}...")
+                other_skipped_axioms += 1
                 # Ensure gradients are cleared if an error occurs mid-batch accumulation
                 optimizer.zero_grad()
                 accumulated_loss = 0.0
@@ -198,8 +242,7 @@ def main():
             except Exception as e:
                 print(f"\nError processing axiom: {axiom_str}")
                 print(f"Unexpected error: {e}")
-                # Decide whether to skip or re-raise
-                skipped_axioms += 1
+                other_skipped_axioms += 1
                 # Ensure gradients are cleared
                 optimizer.zero_grad()
                 accumulated_loss = 0.0
@@ -220,7 +263,8 @@ def main():
 
     print(f"\nTraining finished.")
     print(f"Total axioms processed: {total_processed_axioms}")
-    print(f"Total axioms skipped: {skipped_axioms}")
+    print(f"Axioms skipped due to unsupported constructors: {len(unsupported_axioms_set)}")
+    print(f"Axioms skipped due to other runtime errors: {other_skipped_axioms}")
 
     # --- Save Model ---
     # Save the entire FuzzyOntologyModel, which includes all sub-models
@@ -239,16 +283,22 @@ def main():
 
     # --- Optional: Evaluate Entailment Degree on Training Data (Example) ---
     # You might want to add a separate evaluation step using test data later
-    print("\nExample: Evaluating entailment degree on the first 5 training axioms...")
+    print("\nExample: Evaluating entailment degree on the first 5 supported training axioms...")
     model.eval() # Set model to evaluation mode
+    evaluated_count = 0
     with torch.no_grad():
-        for i, axiom_str in enumerate(all_axioms[:5]):
+        for axiom_str in all_axioms:
+             if axiom_str in unsupported_axioms_set: # Skip unsupported ones here too
+                 continue
+             if evaluated_count >= 5:
+                 break
              try:
                  entailment_degree = model(axiom_str)
                  print(f"Axiom: {axiom_str[:100]}... -> Entailment Degree: {entailment_degree.item():.4f}")
+                 evaluated_count += 1
              except Exception as e:
                  print(f"Could not evaluate axiom: {axiom_str[:100]}... Error: {e}")
-             if i >= 4: break
+                 evaluated_count += 1 # Count as evaluated even if error
 
 
 if __name__ == '__main__':
