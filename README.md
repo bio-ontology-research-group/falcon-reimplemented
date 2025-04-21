@@ -1,4 +1,4 @@
-# FALCON: Sound and Complete Neural Semantic Entailment over ALC Ontologies
+# Causal-FALCON: Causal and neuro-symbolic reasoning over Description Logic ontologies
 
 ## Requirements
 
