@@ -8,6 +8,7 @@ import random
 import time
 from tqdm import tqdm # For progress bar
 import numpy as np # Import numpy for seeding
+import pandas as pd # Import pandas for matrix output
 
 # Add project root to path to import cfalcon modules
 project_root = Path(__file__).resolve().parent.parent
@@ -20,7 +21,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train a Fuzzy OWL Model on TBox and ABox axioms.")
     parser.add_argument('--tbox_path', type=str, required=True, help='Path to the TBox file (functional syntax NNF, one axiom per line).')
     parser.add_argument('--abox_path', type=str, required=True, help='Path to the ABox file (functional syntax NNF, one axiom per line).')
-    parser.add_argument('--output_dir', type=str, default='output_model', help='Directory to save the trained model.')
+    parser.add_argument('--output_dir', type=str, default='output_model', help='Directory to save the trained model and membership matrix.')
     parser.add_argument('--embedding_dim', type=int, default=50, help='Dimension for embeddings.')
     parser.add_argument('--fuzzy_logic', type=str, default='godel', choices=['godel', 'lukasiewicz', 'product'], help='Type of fuzzy logic to use.')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate.')
@@ -28,6 +29,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=32, help='Number of axioms to process before optimizer step.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--device', type=str, default='auto', help='Device to use (cpu, cuda, or auto).')
+    parser.add_argument('--output_membership_filename', type=str, default='membership_matrix.csv', help='Filename for the output membership matrix CSV within the output directory.')
 
     return parser.parse_args()
 
@@ -83,17 +85,19 @@ def main():
     num_individuals = len(individual_list)
 
     if num_individuals == 0:
-        print("Warning: No individuals found in the vocabulary. Fuzzy set operations might be trivial.")
-        # Add a dummy individual if needed, or adjust model logic? For now, proceed.
-        # num_individuals = 1 # Example: Add a dummy if required by model structure
-        # individual_to_idx["<dummy>"] = 0
+        print("Warning: No individuals found in the vocabulary. Fuzzy set operations might be trivial or lead to errors.")
+        # Consider exiting or adding a dummy individual if ABox operations are expected
+        # sys.exit("Exiting due to lack of individuals.")
 
     # --- Initialize Model ---
     print("Initializing model...")
+    # Ensure num_individuals is at least 1 for embedding layer creation, even if no individuals were found
+    # This might need adjustment based on how the model handles zero individuals internally
+    model_num_individuals = max(1, num_individuals)
     model = FuzzyOWLModel(
         num_concepts=num_concepts,
         num_roles=num_roles,
-        num_individuals=num_individuals,
+        num_individuals=model_num_individuals, # Use at least 1 for embedding layer
         embedding_dim=args.embedding_dim,
         fuzzy_logic=args.fuzzy_logic,
         device=device
@@ -137,6 +141,7 @@ def main():
                      # print(f"Warning: Skipping unsupported axiom type: {axiom_str[:100]}...")
                      skipped_axioms += 1
                      continue
+                # Skip ABox assertions if no individuals exist
                 if num_individuals == 0 and ("ClassAssertion" in axiom_str or "ObjectPropertyAssertion" in axiom_str):
                     # print(f"Warning: Skipping ABox axiom due to no individuals: {axiom_str[:100]}...")
                     skipped_axioms +=1
@@ -216,6 +221,51 @@ def main():
         'args': args,
     }, model_save_path)
     print("Model saved.")
+
+    # --- Evaluate and Save Membership Matrix ---
+    if num_individuals > 0:
+        print("\nCalculating membership matrix...")
+        model.eval() # Set model to evaluation mode
+
+        membership_data = {}
+        with torch.no_grad():
+            for concept_name in tqdm(concept_list, desc="Evaluating concepts"):
+                try:
+                    # Get the fuzzy set for the concept (membership for all individuals)
+                    fuzzy_set = model(concept_name) # Shape: [num_individuals]
+                    if fuzzy_set.shape == (num_individuals,):
+                         membership_data[concept_name] = fuzzy_set.cpu().numpy()
+                    else:
+                         print(f"Warning: Unexpected output shape {fuzzy_set.shape} for concept '{concept_name}'. Skipping.")
+                except (NotImplementedError, ValueError, RuntimeError, IndexError) as e:
+                    print(f"Warning: Could not evaluate concept '{concept_name}' due to error: {e}. Skipping.")
+                except Exception as e:
+                    print(f"Warning: Unexpected error evaluating concept '{concept_name}': {e}. Skipping.")
+
+
+        if membership_data:
+            # Create DataFrame
+            membership_df = pd.DataFrame(membership_data, index=individual_list)
+            membership_df.index.name = 'Individual'
+
+            # Save to CSV
+            membership_save_path = output_dir / args.output_membership_filename
+            print(f"Saving membership matrix to {membership_save_path}...")
+            try:
+                membership_df.to_csv(membership_save_path, float_format='%.4f')
+                print("Membership matrix saved.")
+                # Optionally print part of the matrix
+                print("\nMembership Matrix (sample):")
+                print(membership_df.head())
+
+            except Exception as e:
+                print(f"Error saving membership matrix: {e}")
+        else:
+            print("No membership data was generated (possibly due to errors or no concepts).")
+
+    else:
+        print("\nSkipping membership matrix generation as no individuals were found in the vocabulary.")
+
 
 if __name__ == '__main__':
     main()
