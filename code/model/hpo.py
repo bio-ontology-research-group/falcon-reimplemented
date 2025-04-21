@@ -11,153 +11,34 @@ import numpy as np
 import random
 import tqdm
 import re # Keep re
-import pickle
+# import pickle # Moved to utils
 import torch.utils.checkpoint as checkpoint
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import average_precision_score
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import roc_auc_score # Keep for potential direct use
+from sklearn.metrics import average_precision_score # Keep for potential direct use
+from sklearn.metrics import precision_recall_curve # Keep for potential direct use
 import warnings
 from pathlib import Path # Use pathlib
+
+# Import shared functions from cfalcon.utils
+from cfalcon.utils import (
+    load_obj, save_obj, reconstruct_functional_syntax,
+    read_list_from_file, read_tbox_test_axioms, concept_replacer,
+    tbox_test_neg_generator, get_abox_ec_created, compute_metrics,
+    iterator
+)
 
 warnings.filterwarnings('ignore')
 
 
-def load_obj(path):
-    with open(path, 'rb') as f:
-        return pickle.load(f)
-
-def save_obj(obj, path):
-    with open(path, 'wb') as f:
-        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
-
-# Removed get_rights - Not needed
-# Removed get_all_concepts_and_relations - Not needed
-# Removed extract_nodes - Not needed
-# Removed read_abox_ee - Replaced by reading abox_ee.tsv
-# Removed read_abox_ec - Replaced by reading abox_ec.tsv
-
-def reconstruct_functional_syntax(axiom_type, parts):
-    """
-    Reconstructs OWL functional syntax strings from TSV parts.
-    Focuses on patterns relevant to the original FALCON TBox loss.
-    """
-    try:
-        if axiom_type == "SubClassOf" and len(parts) == 2:
-            # C <= D -> ObjectIntersectionOf(<C> ObjectComplementOf(<D>))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf({parts[1]}))"
-        elif axiom_type == "EquivalentClasses" and len(parts) == 2:
-            # C <=> D -> two axioms C <= D and D <= C
-            ax1 = f"ObjectIntersectionOf({parts[0]} ObjectComplementOf({parts[1]}))"
-            ax2 = f"ObjectIntersectionOf({parts[1]} ObjectComplementOf({parts[0]}))"
-            return [ax1, ax2]
-        elif axiom_type == "DisjointClasses" and len(parts) == 2:
-            # Disjoint(C, D) -> C and D <= Nothing
-            return f"ObjectIntersectionOf(ObjectIntersectionOf({parts[0]} {parts[1]}) ObjectComplementOf(owl:Nothing))"
-        elif axiom_type == "SubClassOf_SomeValuesFrom" and len(parts) == 3:
-            # C <= exists R.D -> ObjectIntersectionOf(<C> ObjectComplementOf(ObjectSomeValuesFrom({parts[1]} {parts[2]})))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectSomeValuesFrom({parts[1]} {parts[2]})))"
-        elif axiom_type == "SomeValuesFrom_SubClassOf" and len(parts) == 3:
-            # exists R.C <= D -> ObjectIntersectionOf(ObjectSomeValuesFrom(<R> <C>) ObjectComplementOf(<D>))
-            return f"ObjectIntersectionOf(ObjectSomeValuesFrom({parts[0]} {parts[1]}) ObjectComplementOf({parts[2]}))"
-        elif axiom_type == "EquivalentClasses_SomeValuesFrom" and len(parts) == 3:
-            # C <=> exists R.D -> C <= exists R.D and exists R.D <= C
-            ax1 = f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectSomeValuesFrom({parts[1]} {parts[2]})))"
-            ax2 = f"ObjectIntersectionOf(ObjectSomeValuesFrom({parts[1]} {parts[2]}) ObjectComplementOf({parts[0]}))"
-            return [ax1, ax2]
-        elif axiom_type == "SubClassOf_AllValuesFrom" and len(parts) == 3:
-            # C <= forall R.D -> ObjectIntersectionOf(<C> ObjectComplementOf(ObjectAllValuesFrom(<R> <D>)))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectAllValuesFrom({parts[1]} {parts[2]})))"
-        # Ignore Domain, Range, SubProperty for TBox loss
-        elif axiom_type in ["ObjectPropertyDomain", "ObjectPropertyRange", "SubObjectPropertyOf"]:
-            return None
-        else:
-            # print(f"Warning: Unsupported TBox axiom type for reconstruction: {axiom_type} with parts {parts}")
-            return None
-    except IndexError:
-        # print(f"Warning: IndexError during reconstruction for {axiom_type} with parts {parts}")
-        return None
-
-def read_list_from_file(filepath):
-    """Reads lines from a file into a list, stripping whitespace."""
-    if not filepath.exists():
-        print(f"Warning: File not found {filepath}")
-        return []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip()]
-
-def read_tbox_test_axioms(filepath):
-    """Reads axiom strings directly from a file, one per line."""
-    # This replaces the old read_tbox_test which also parsed concepts/relations
-    if not filepath.exists():
-        print(f"Warning: Test TBox file not found: {filepath}")
-        return []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip()]
-
-def concept_replacer(axiom_str, all_concepts_list):
-    """Replaces concepts in a functional syntax string axiom."""
-    # This is a simplified replacer based on string manipulation.
-    # It might break on complex nested structures.
-    # A proper parser would be more robust.
-    replaced_axiom = axiom_str
-    # Find potential concept IRIs (simple regex)
-    potential_concepts = re.findall(r'<[^>]+>', axiom_str)
-    potential_concepts += re.findall(r'owl:Thing|owl:Nothing', axiom_str)
-
-    concepts_in_axiom = [c for c in potential_concepts if c in all_concepts_list]
-
-    if not concepts_in_axiom:
-        return axiom_str # No known concepts to replace
-
-    concept_to_replace = random.choice(concepts_in_axiom)
-    replacement_concept = random.choice(all_concepts_list)
-    # Avoid replacing with Nothing or the same concept if possible
-    while replacement_concept == concept_to_replace or replacement_concept == 'owl:Nothing':
-         if len(all_concepts_list) <= 2: break # Avoid infinite loop if only two concepts exist
-         replacement_concept = random.choice(all_concepts_list)
-
-    # Simple string replacement (might replace unintended substrings)
-    replaced_axiom = replaced_axiom.replace(concept_to_replace, replacement_concept, 1)
-
-    return replaced_axiom
-
-
-def tbox_test_neg_generator(tbox_train_axioms, tbox_test_pos_axioms, all_concepts_list, k):
-    """Generates negative TBox test axioms by replacing concepts."""
-    # Combine known positive axioms to avoid regenerating them
-    all_pos_axioms = set(tbox_train_axioms) | set(tbox_test_pos_axioms)
-    tbox_test_neg = []
-    attempts = 0
-    max_attempts = k * 100 # Limit attempts to avoid infinite loops
-
-    while len(tbox_test_neg) < k and attempts < max_attempts:
-        # Choose a positive axiom (prefer test axioms if available)
-        axiom_pos = random.choice(tbox_test_pos_axioms if tbox_test_pos_axioms else tbox_train_axioms)
-        # Replace a concept
-        axiom_neg = concept_replacer(axiom_pos, all_concepts_list)
-        # Ensure it's different and not already a known positive
-        if axiom_neg != axiom_pos and axiom_neg not in all_pos_axioms:
-            tbox_test_neg.append(axiom_neg)
-        attempts += 1
-
-    if len(tbox_test_neg) < k:
-        print(f"Warning: Could only generate {len(tbox_test_neg)} negative test axioms out of {k} requested.")
-
-    return tbox_test_neg
-
-def get_abox_ec_created(all_concepts_list, k):
-    """Generates DataFrame for created ABox EC axioms."""
-    ret = []
-    counter = 0
-    concepts_to_use = [c for c in all_concepts_list if c not in ['owl:Thing', 'owl:Nothing']]
-    for concept in concepts_to_use:
-        if counter < k:
-            entity_iri = concept[:-1] + '_generated_1>' if concept.endswith('>') else concept + '_generated_1'
-            ret.append([entity_iri, concept])
-            counter += 1
-        else:
-            break
-    return pd.DataFrame(ret, columns=['h', 't'])
+# Removed load_obj
+# Removed save_obj
+# Removed reconstruct_functional_syntax
+# Removed read_list_from_file
+# Removed read_tbox_test_axioms
+# Removed concept_replacer
+# Removed tbox_test_neg_generator
+# Removed get_abox_ec_created
+# Removed compute_metrics
 
 def get_data(cfg):
     """Loads data from preprocessed files specified by cfg.data_path."""
@@ -171,7 +52,7 @@ def get_data(cfg):
 
     print(f"Loading data from: {data_path.resolve()}")
 
-    # Load concepts, relations, entities
+    # Load concepts, relations, entities using utility function
     all_concepts_list = read_list_from_file(data_path / "concepts.txt")
     all_relations_list = read_list_from_file(data_path / "relations.txt")
     all_entities_list = read_list_from_file(data_path / "entities.txt")
@@ -211,7 +92,7 @@ def get_data(cfg):
         entities_to_keep = set(all_entities_list) # Keep all entities even if EE is empty
 
 
-    # Load and reconstruct TBox data for training
+    # Load and reconstruct TBox data for training using utility function
     tbox_name_list = []
     tbox_desc_train = []
     tbox_train_axioms_reconstructed = [] # Store all reconstructed train axioms for neg generation
@@ -222,7 +103,7 @@ def get_data(cfg):
                 if not parts: continue
                 axiom_type = parts[0]
                 axiom_parts = parts[1:]
-                reconstructed = reconstruct_functional_syntax(axiom_type, axiom_parts)
+                reconstructed = reconstruct_functional_syntax(axiom_type, axiom_parts) # Use util func
 
                 if reconstructed:
                     if isinstance(reconstructed, list):
@@ -248,7 +129,7 @@ def get_data(cfg):
 
     tbox_name_train = pd.DataFrame(tbox_name_list, columns=['h', 'r', 't'])
 
-    # Load TBox test axioms (positive and negative)
+    # Load TBox test axioms (positive and negative) using utility function
     tbox_test_pos = read_tbox_test_axioms(tbox_test_pos_file)
     if not tbox_test_pos:
          print(f"Warning: Positive test TBox file '{tbox_test_pos_file}' not found or empty.")
@@ -262,6 +143,7 @@ def get_data(cfg):
         if tbox_train_axioms_reconstructed or tbox_test_pos:
             print("Generating negative TBox test axioms...")
             num_neg_to_generate = len(tbox_test_pos) if tbox_test_pos else 1000 # Generate based on pos count or default
+            # Use utility function for generation
             tbox_test_neg = tbox_test_neg_generator(tbox_train_axioms_reconstructed, tbox_test_pos, all_concepts_list, k=num_neg_to_generate)
             # Save generated negatives
             try:
@@ -276,7 +158,7 @@ def get_data(cfg):
              tbox_test_neg = []
 
 
-    # Generate created entities for ABox EC
+    # Generate created entities for ABox EC using utility function
     abox_ec_created = get_abox_ec_created(all_concepts_list, k=cfg.n_abox_ec_created)
     created_entities_list = list(abox_ec_created['h'].unique())
 
@@ -324,8 +206,8 @@ def get_data(cfg):
     abox_ee_train_path = data_path / 'abox_ee_train.pkl'
     abox_ee_test_path = data_path / 'abox_ee_test.pkl'
     try:
-        abox_ee_train = load_obj(abox_ee_train_path)
-        abox_ee_test = load_obj(abox_ee_test_path)
+        abox_ee_train = load_obj(abox_ee_train_path) # Use util func
+        abox_ee_test = load_obj(abox_ee_test_path) # Use util func
         print("Loaded existing GGI train/test split from .pkl files.")
         # Ensure loaded data uses current entity dictionary
         abox_ee_train = abox_ee_train[abox_ee_train['h'].isin(e_dict) & abox_ee_train['t'].isin(e_dict)]
@@ -337,8 +219,8 @@ def get_data(cfg):
             abox_ee_test = abox_ee.sample(frac=0.2, random_state=42)
             abox_ee_train = abox_ee.drop(abox_ee_test.index)
             try:
-                save_obj(abox_ee_train, abox_ee_train_path)
-                save_obj(abox_ee_test, abox_ee_test_path)
+                save_obj(abox_ee_train, abox_ee_train_path) # Use util func
+                save_obj(abox_ee_test, abox_ee_test_path) # Use util func
                 print(f"Saved new GGI split to {abox_ee_train_path} and {abox_ee_test_path}")
             except IOError as e:
                  print(f"Error saving GGI split: {e}")
@@ -759,38 +641,7 @@ def ggi_evaluate(model, loader, e_dict_len, device, already_ts_dict, already_hs_
     return round(mrr / total_predictions, 5), round(mh3 / total_predictions, 3), round(mh10 / total_predictions, 3)
 
 # --- Utils ---
-def iterator(dataloader):
-    while True:
-        for data in dataloader: yield data
-
-def compute_metrics(preds):
-    """Computes AUC, AUPR, Fmax for TBox evaluation."""
-    if not preds: return 0.0, 0.0, 0.0, 0.0
-    n_total = len(preds)
-    n_pos = n_total // 2 # Assumes balanced positive/negative test set
-    n_neg = n_total - n_pos
-    if n_pos == 0 or n_neg == 0: return 0.0, 0.0, 0.0, 0.0 # Cannot compute metrics
-
-    # Labels: 1 for positive (should have low score), 0 for negative (should have high score)
-    # This seems reversed in the original code? Let's assume preds are membership degrees (higher is better).
-    # Labels: 1 for positive (true axiom), 0 for negative (false axiom)
-    labels = [1] * n_pos + [0] * n_neg # Standard convention
-
-    # MAE on positive examples (lower is better)
-    mae_pos = round(np.mean([(1.0 - p) for p in preds[:n_pos]]), 4) # How far positives are from 1.0
-
-    try:
-        auc = round(roc_auc_score(labels, preds), 4)
-        aupr = round(average_precision_score(labels, preds), 4)
-        precision, recall, _ = precision_recall_curve(labels, preds)
-        # Filter out invalid values for F1 calculation
-        f1_scores = np.divide(2 * recall * precision, recall + precision, out=np.zeros_like(recall), where=(recall + precision) > 0)
-        fmax = round(np.max(f1_scores), 4) if len(f1_scores) > 0 else 0.0
-    except ValueError as e:
-        print(f"Warning: Could not compute metrics: {e}")
-        auc, aupr, fmax = 0.0, 0.0, 0.0
-
-    return mae_pos, auc, aupr, fmax
+# Removed iterator (moved to utils)
 
 # --- Args ---
 def parse_args(args=None):
@@ -853,6 +704,7 @@ if __name__ == '__main__':
     tbox_desc_dataset = NaiveDataset(tbox_desc_train) if tbox_desc_train else None
 
     dataloaders = {}
+    # Use utility function for iterators
     if ggi_dataset_train: dataloaders['ggi'] = iterator(torch.utils.data.DataLoader(ggi_dataset_train, batch_size=cfg.bs_ee, shuffle=True, drop_last=True))
     if abox_ec_dataset: dataloaders['abox_ec'] = iterator(torch.utils.data.DataLoader(abox_ec_dataset, batch_size=cfg.bs_ec, shuffle=True, drop_last=True))
     if abox_ec_created_dataset: dataloaders['abox_ec_created'] = iterator(torch.utils.data.DataLoader(abox_ec_created_dataset, batch_size=cfg.bs_ec_created, shuffle=True, drop_last=True))
@@ -936,7 +788,7 @@ if __name__ == '__main__':
                 print(f'#GGI# MRR: {mrr:.3f}, H@3: {mh3:.3f}, H@10: {mh10:.3f}', flush=True)
             else: print("#GGI# Skipping evaluation (no test data).")
 
-            # TBox Evaluation
+            # TBox Evaluation using utility function
             mae_pos, auc, aupr, fmax = 0.0, 0.0, 0.0, 0.0
             if tbox_test_pos or tbox_test_neg:
                 model.eval()
@@ -956,7 +808,7 @@ if __name__ == '__main__':
                         fs = model.forward(axiom_str, anon_e_emb, c_dict, r_dict)
                         preds.append(1.0 - fs.max().item())
 
-                mae_pos, auc, aupr, fmax = compute_metrics(preds)
+                mae_pos, auc, aupr, fmax = compute_metrics(preds) # Use util func
                 print(f'#TBox# MAE(pos):{mae_pos:.3f}\tAUC:{auc:.3f}\tAUPR:{aupr:.3f}\tFmax:{fmax:.3f}', flush=True)
             else: print("#TBox# Skipping evaluation (no test data).")
 

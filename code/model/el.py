@@ -11,103 +11,35 @@ import numpy as np
 import random
 import tqdm
 import re # Keep re for now, might be needed if reconstruction needs it, though unlikely
-import pickle
+# import pickle # Moved to utils
 import torch.utils.checkpoint as checkpoint
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import average_precision_score
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import roc_auc_score # Keep for potential direct use if needed later
+from sklearn.metrics import average_precision_score # Keep for potential direct use
+from sklearn.metrics import precision_recall_curve # Keep for potential direct use
 import warnings
 from pathlib import Path # Use pathlib for path manipulation
+
+# Import shared functions from cfalcon.utils
+from cfalcon.utils import (
+    load_obj, save_obj, reconstruct_functional_syntax,
+    read_list_from_file, get_abox_ec_created, iterator
+)
 
 warnings.filterwarnings('ignore')
 
 
-def load_obj(path):
-    with open(path, 'rb') as f:
-        return pickle.load(f)
-
-def save_obj(obj, path):
-    with open(path, 'wb') as f:
-        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
-
-# Removed get_rights - Not needed as Groovy script handles structure
-# Removed get_all_concepts_and_relations - Not needed
-# Removed extract_nodes - Not needed
-# Removed read_file - Replaced by reading standardized files
-
-def reconstruct_functional_syntax(axiom_type, parts):
-    """
-    Reconstructs OWL functional syntax strings from TSV parts.
-    Focuses on patterns relevant to the original FALCON TBox loss.
-    """
-    try:
-        if axiom_type == "SubClassOf" and len(parts) == 2:
-            # C <= D -> ObjectIntersectionOf(<C> ObjectComplementOf(<D>))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf({parts[1]}))"
-        elif axiom_type == "EquivalentClasses" and len(parts) == 2:
-            # C <=> D -> two axioms C <= D and D <= C
-            ax1 = f"ObjectIntersectionOf({parts[0]} ObjectComplementOf({parts[1]}))"
-            ax2 = f"ObjectIntersectionOf({parts[1]} ObjectComplementOf({parts[0]}))"
-            return [ax1, ax2]
-        elif axiom_type == "DisjointClasses" and len(parts) == 2:
-            # Disjoint(C, D) -> C and D <= Nothing
-            # Reconstruct format similar to original GetTBox.groovy for consistency:
-            return f"ObjectIntersectionOf(ObjectIntersectionOf({parts[0]} {parts[1]}) ObjectComplementOf(owl:Nothing))"
-        elif axiom_type == "SubClassOf_SomeValuesFrom" and len(parts) == 3:
-            # C <= exists R.D -> ObjectIntersectionOf(<C> ObjectComplementOf(ObjectSomeValuesFrom(<R> <D>)))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectSomeValuesFrom({parts[1]} {parts[2]})))"
-        elif axiom_type == "SomeValuesFrom_SubClassOf" and len(parts) == 3:
-            # exists R.C <= D -> ObjectIntersectionOf(ObjectSomeValuesFrom(<R> <C>) ObjectComplementOf(<D>))
-            return f"ObjectIntersectionOf(ObjectSomeValuesFrom({parts[0]} {parts[1]}) ObjectComplementOf({parts[2]}))"
-        elif axiom_type == "EquivalentClasses_SomeValuesFrom" and len(parts) == 3:
-            # C <=> exists R.D -> C <= exists R.D and exists R.D <= C
-            ax1 = f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectSomeValuesFrom({parts[1]} {parts[2]})))"
-            ax2 = f"ObjectIntersectionOf(ObjectSomeValuesFrom({parts[1]} {parts[2]}) ObjectComplementOf({parts[0]}))"
-            return [ax1, ax2]
-        elif axiom_type == "SubClassOf_AllValuesFrom" and len(parts) == 3:
-            # C <= forall R.D -> ObjectIntersectionOf(<C> ObjectComplementOf(ObjectAllValuesFrom(<R> <D>)))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectAllValuesFrom({parts[1]} {parts[2]})))"
-        # Ignore Domain, Range, SubProperty for TBox loss as they likely weren't used before
-        elif axiom_type in ["ObjectPropertyDomain", "ObjectPropertyRange", "SubObjectPropertyOf"]:
-            return None
-        else:
-            # print(f"Warning: Unsupported TBox axiom type for reconstruction: {axiom_type} with parts {parts}")
-            return None
-    except IndexError:
-        # print(f"Warning: IndexError during reconstruction for {axiom_type} with parts {parts}")
-        return None
-
-
-def read_list_from_file(filepath):
-    """Reads lines from a file into a list, stripping whitespace."""
-    if not filepath.exists():
-        print(f"Warning: File not found {filepath}")
-        return []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip()]
-
-def get_abox_ec_created(all_concepts_list, k):
-    """Generates DataFrame for created ABox EC axioms."""
-    ret = []
-    counter = 0
-    # Ensure owl:Thing and owl:Nothing are not used if present
-    concepts_to_use = [c for c in all_concepts_list if c not in ['owl:Thing', 'owl:Nothing']]
-    for concept in concepts_to_use:
-        if counter < k:
-            # Simple heuristic to create a new entity IRI
-            entity_iri = concept[:-1] + '_generated_1>' if concept.endswith('>') else concept + '_generated_1'
-            ret.append([entity_iri, concept])
-            counter += 1
-        else:
-            break
-    return pd.DataFrame(ret, columns=['h', 't'])
+# Removed load_obj
+# Removed save_obj
+# Removed reconstruct_functional_syntax
+# Removed read_list_from_file
+# Removed get_abox_ec_created
 
 def get_data(cfg):
     """Loads data from preprocessed files specified by cfg.data_path."""
     data_path = Path(cfg.data_path)
     print(f"Loading data from: {data_path.resolve()}")
 
-    # Load concepts, relations, entities
+    # Load concepts, relations, entities using utility function
     all_concepts_list = read_list_from_file(data_path / "concepts.txt")
     all_relations_list = read_list_from_file(data_path / "relations.txt")
     all_entities_list = read_list_from_file(data_path / "entities.txt")
@@ -143,7 +75,7 @@ def get_data(cfg):
         print(f"Warning: {data_path / 'abox_ee.tsv'} is empty. ABox EE will be empty.")
         abox_ee = pd.DataFrame(columns=['h', 'r', 't'])
 
-    # Load and reconstruct TBox data
+    # Load and reconstruct TBox data using utility function
     tbox_name_list = []
     tbox_desc = []
     try:
@@ -154,7 +86,7 @@ def get_data(cfg):
                 axiom_type = parts[0]
                 axiom_parts = parts[1:] # Keep as strings
 
-                # Reconstruct functional syntax
+                # Reconstruct functional syntax using utility function
                 reconstructed = reconstruct_functional_syntax(axiom_type, axiom_parts)
 
                 if reconstructed:
@@ -200,7 +132,7 @@ def get_data(cfg):
         all_es.update(abox_ee['t'].unique())
         all_rs.update(abox_ee['r'].unique())
 
-    # Generate created entities for ABox EC (using updated concept list)
+    # Generate created entities for ABox EC (using updated concept list) using utility function
     abox_ec_created = get_abox_ec_created(list(all_cs), k=cfg.n_abox_ec_created)
     created_entities_list = list(abox_ec_created['h'].unique())
     all_es.update(created_entities_list) # Add created entity IRIs to the set
@@ -1144,11 +1076,7 @@ def ggi_evaluate(model, loader, e_dict_len, device, already_ts_dict, already_hs_
 
 
 # --- Utility Functions ---
-def iterator(dataloader):
-    """Creates an infinite iterator over a dataloader."""
-    while True:
-        for data in dataloader:
-            yield data
+# Removed iterator (moved to utils)
 
 # --- Argument Parsing ---
 def parse_args(args=None):
@@ -1252,7 +1180,7 @@ if __name__ == '__main__':
         dataset=tbox_desc_dataset, batch_size=cfg.bs_tbox_desc, shuffle=True, drop_last=True
     ) if tbox_desc_dataset else None
 
-    # Wrap non-empty dataloaders in infinite iterators
+    # Wrap non-empty dataloaders in infinite iterators using utility function
     dataloaders = {}
     if ggi_dataloader_train: dataloaders['ggi'] = iterator(ggi_dataloader_train)
     if abox_ec_dataloader: dataloaders['abox_ec'] = iterator(abox_ec_dataloader)

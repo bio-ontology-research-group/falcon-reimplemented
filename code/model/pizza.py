@@ -5,104 +5,26 @@ import os
 import pandas as pd
 import numpy as np
 import random
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import average_precision_score
-from sklearn.metrics import precision_recall_curve
+# from sklearn.metrics import roc_auc_score # Moved to utils
+# from sklearn.metrics import average_precision_score # Moved to utils
+# from sklearn.metrics import precision_recall_curve # Moved to utils
 import re # Keep re
 from pathlib import Path # Use pathlib
 import sys # For exit
 
-# Removed get_rights - Not needed
-# Removed get_all_concepts_and_relations - Not needed
-# Removed extract_nodes - Not needed
+# Import shared functions from cfalcon.utils
+from cfalcon.utils import (
+    reconstruct_functional_syntax, read_list_from_file,
+    read_tbox_test_axioms, concept_replacer, tbox_test_neg_generator,
+    compute_metrics
+)
 
-def reconstruct_functional_syntax(axiom_type, parts):
-    """
-    Reconstructs OWL functional syntax strings from TSV parts.
-    Focuses on patterns relevant to the original FALCON TBox loss.
-    """
-    try:
-        if axiom_type == "SubClassOf" and len(parts) == 2:
-            # C <= D -> ObjectIntersectionOf(<C> ObjectComplementOf(<D>))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf({parts[1]}))"
-        elif axiom_type == "EquivalentClasses" and len(parts) == 2:
-            # C <=> D -> two axioms C <= D and D <= C
-            ax1 = f"ObjectIntersectionOf({parts[0]} ObjectComplementOf({parts[1]}))"
-            ax2 = f"ObjectIntersectionOf({parts[1]} ObjectComplementOf({parts[0]}))"
-            return [ax1, ax2]
-        elif axiom_type == "DisjointClasses" and len(parts) == 2:
-            # Disjoint(C, D) -> C and D <= Nothing
-            return f"ObjectIntersectionOf(ObjectIntersectionOf({parts[0]} {parts[1]}) ObjectComplementOf(owl:Nothing))"
-        elif axiom_type == "SubClassOf_SomeValuesFrom" and len(parts) == 3:
-            # C <= exists R.D -> ObjectIntersectionOf(<C> ObjectComplementOf(ObjectSomeValuesFrom({parts[1]} {parts[2]})))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectSomeValuesFrom({parts[1]} {parts[2]})))"
-        elif axiom_type == "SomeValuesFrom_SubClassOf" and len(parts) == 3:
-            # exists R.C <= D -> ObjectIntersectionOf(ObjectSomeValuesFrom(<R> <C>) ObjectComplementOf(<D>))
-            return f"ObjectIntersectionOf(ObjectSomeValuesFrom({parts[0]} {parts[1]}) ObjectComplementOf({parts[2]}))"
-        elif axiom_type == "EquivalentClasses_SomeValuesFrom" and len(parts) == 3:
-            # C <=> exists R.D -> C <= exists R.D and exists R.D <= C
-            ax1 = f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectSomeValuesFrom({parts[1]} {parts[2]})))"
-            ax2 = f"ObjectIntersectionOf(ObjectSomeValuesFrom({parts[1]} {parts[2]}) ObjectComplementOf({parts[0]}))"
-            return [ax1, ax2]
-        elif axiom_type == "SubClassOf_AllValuesFrom" and len(parts) == 3:
-            # C <= forall R.D -> ObjectIntersectionOf(<C> ObjectComplementOf(ObjectAllValuesFrom(<R> <D>)))
-            return f"ObjectIntersectionOf({parts[0]} ObjectComplementOf(ObjectAllValuesFrom({parts[1]} {parts[2]})))"
-        # Ignore Domain, Range, SubProperty for TBox loss
-        elif axiom_type in ["ObjectPropertyDomain", "ObjectPropertyRange", "SubObjectPropertyOf"]:
-            return None
-        else:
-            # print(f"Warning: Unsupported TBox axiom type for reconstruction: {axiom_type} with parts {parts}")
-            return None
-    except IndexError:
-        # print(f"Warning: IndexError during reconstruction for {axiom_type} with parts {parts}")
-        return None
-
-def read_list_from_file(filepath):
-    """Reads lines from a file into a list, stripping whitespace."""
-    if not filepath.exists():
-        print(f"Warning: File not found {filepath}")
-        return []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip()]
-
-def read_tbox_test_axioms(filepath):
-    """Reads axiom strings directly from a file, one per line."""
-    if not filepath.exists():
-        print(f"Warning: Test TBox file not found: {filepath}")
-        return []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip()]
-
-def concept_replacer(axiom_str, all_concepts_list):
-    """Replaces concepts in a functional syntax string axiom."""
-    replaced_axiom = axiom_str
-    potential_concepts = re.findall(r'<[^>]+>', axiom_str)
-    potential_concepts += re.findall(r'owl:Thing|owl:Nothing', axiom_str)
-    concepts_in_axiom = [c for c in potential_concepts if c in all_concepts_list]
-    if not concepts_in_axiom: return axiom_str
-    concept_to_replace = random.choice(concepts_in_axiom)
-    replacement_concept = random.choice(all_concepts_list)
-    while replacement_concept == concept_to_replace or replacement_concept == 'owl:Nothing':
-         if len(all_concepts_list) <= 2: break
-         replacement_concept = random.choice(all_concepts_list)
-    replaced_axiom = replaced_axiom.replace(concept_to_replace, replacement_concept, 1)
-    return replaced_axiom
-
-def tbox_test_neg_generator(tbox_train_axioms, tbox_test_pos_axioms, all_concepts_list, k):
-    """Generates negative TBox test axioms by replacing concepts."""
-    all_pos_axioms = set(tbox_train_axioms) | set(tbox_test_pos_axioms)
-    tbox_test_neg = []
-    attempts = 0
-    max_attempts = k * 100
-    while len(tbox_test_neg) < k and attempts < max_attempts:
-        axiom_pos = random.choice(tbox_test_pos_axioms if tbox_test_pos_axioms else tbox_train_axioms)
-        axiom_neg = concept_replacer(axiom_pos, all_concepts_list)
-        if axiom_neg != axiom_pos and axiom_neg not in all_pos_axioms:
-            tbox_test_neg.append(axiom_neg)
-        attempts += 1
-    if len(tbox_test_neg) < k:
-        print(f"Warning: Could only generate {len(tbox_test_neg)} negative test axioms out of {k} requested.")
-    return tbox_test_neg
+# Removed reconstruct_functional_syntax
+# Removed read_list_from_file
+# Removed read_tbox_test_axioms
+# Removed concept_replacer
+# Removed tbox_test_neg_generator
+# Removed compute_metrics
 
 
 class FALCON(torch.nn.Module):
@@ -169,8 +91,10 @@ class FALCON(torch.nn.Module):
 
     # --- Fuzzy Set Calculation ---
     def _get_all_entity_embeddings(self, anon_e_emb):
-        if anon_e_emb.shape[0] != self.anon_e or anon_e_emb.shape[1] != self.cfg.emb_dim:
-             raise ValueError(f"Incorrect shape for anon_e_emb: {anon_e_emb.shape}")
+        if anon_e_emb.shape[0] != self.anon_e or (self.anon_e > 0 and anon_e_emb.shape[1] != self.cfg.emb_dim):
+             # Allow empty tensor if anon_e is 0
+             if self.anon_e > 0:
+                 raise ValueError(f"Incorrect shape for anon_e_emb: {anon_e_emb.shape}")
         if not hasattr(self, 'device'): raise RuntimeError("Model device not set.")
         if anon_e_emb.device != self.device: anon_e_emb = anon_e_emb.to(self.device)
         return torch.cat([self.e_embedding_base.weight, anon_e_emb], dim=0)
@@ -286,7 +210,7 @@ def get_data(cfg):
 
     print(f"Loading data from: {data_path.resolve()}")
 
-    # Load concepts, relations, entities
+    # Load concepts, relations, entities using utility function
     all_concepts_list = read_list_from_file(data_path / "concepts.txt")
     all_relations_list = read_list_from_file(data_path / "relations.txt")
     all_entities_list = read_list_from_file(data_path / "entities.txt")
@@ -312,7 +236,7 @@ def get_data(cfg):
         print(f"Warning: {data_path / 'abox_ee.tsv'} not found or empty. ABox EE will be empty.")
         abox_ee = []
 
-    # Load and reconstruct TBox data for training
+    # Load and reconstruct TBox data for training using utility function
     tbox_train = []
     try:
         with open(data_path / "tbox.tsv", 'r', encoding='utf-8') as f:
@@ -320,7 +244,7 @@ def get_data(cfg):
                 parts = line.strip().split('\t')
                 if not parts: continue
                 axiom_type = parts[0]; axiom_parts = parts[1:]
-                reconstructed = reconstruct_functional_syntax(axiom_type, axiom_parts)
+                reconstructed = reconstruct_functional_syntax(axiom_type, axiom_parts) # Use util func
                 if reconstructed:
                     if isinstance(reconstructed, list): tbox_train.extend(reconstructed)
                     else: tbox_train.append(reconstructed)
@@ -334,7 +258,7 @@ def get_data(cfg):
          print(f"Warning: n_inconsistent > 0 is set, but adding inconsistent axioms from code is disabled. "
                f"Ensure they are present in {data_path / 'tbox.tsv'} if required.")
 
-    # Load TBox test axioms
+    # Load TBox test axioms using utility function
     tbox_test_pos = read_tbox_test_axioms(tbox_test_pos_file)
     if not tbox_test_pos: print(f"Warning: Positive test TBox file '{tbox_test_pos_file}' not found or empty.")
 
@@ -345,6 +269,7 @@ def get_data(cfg):
         if tbox_train or tbox_test_pos:
             print("Generating negative TBox test axioms...")
             num_neg_to_generate = len(tbox_test_pos) if tbox_test_pos else 500 # Default count
+            # Use utility function for generation
             tbox_test_neg = tbox_test_neg_generator(tbox_train, tbox_test_pos, all_concepts_list, k=num_neg_to_generate)
             try: # Save generated negatives
                 with open(tbox_test_neg_file, 'w', encoding='utf-8') as f:
@@ -370,22 +295,7 @@ def get_data(cfg):
     return tbox_train, tbox_test_pos, tbox_test_neg, abox_ec, abox_ee, c_dict, e_dict, r_dict
 
 # --- Metrics ---
-def compute_metrics(preds):
-    """Computes AUC, AUPR, Fmax for TBox evaluation."""
-    if not preds: return 0.0, 0.0, 0.0, 0.0
-    n_total = len(preds); n_pos = n_total // 2; n_neg = n_total - n_pos
-    if n_pos == 0 or n_neg == 0: return 0.0, 0.0, 0.0, 0.0
-    labels = [1] * n_pos + [0] * n_neg # 1=True, 0=False
-    # MAE on positive examples (how far from 1.0)
-    mae_pos = round(np.mean([(1.0 - p) for p in preds[:n_pos]]), 4)
-    try:
-        auc = round(roc_auc_score(labels, preds), 4)
-        aupr = round(average_precision_score(labels, preds), 4)
-        precision, recall, _ = precision_recall_curve(labels, preds)
-        f1_scores = np.divide(2 * recall * precision, recall + precision, out=np.zeros_like(recall), where=(recall + precision) > 0)
-        fmax = round(np.max(f1_scores), 4) if len(f1_scores) > 0 else 0.0
-    except ValueError as e: print(f"Warning: Could not compute metrics: {e}"); auc, aupr, fmax = 0.0, 0.0, 0.0
-    return mae_pos, auc, aupr, fmax
+# Removed compute_metrics (moved to utils)
 
 # --- Args ---
 def parse_args(args=None):
@@ -515,7 +425,7 @@ if __name__ == '__main__':
                         fs = model.forward(axiom_str, anon_e_emb, c_dict, r_dict)
                         preds.append(1.0 - fs.max().item())
 
-                mae_pos, auc, aupr, fmax = compute_metrics(preds)
+                mae_pos, auc, aupr, fmax = compute_metrics(preds) # Use util func
                 print(f' Step {step+1} - Loss: {loss.item():.4f} | Valid MAE(pos):{mae_pos:.3f} AUC:{auc:.3f} AUPR:{aupr:.3f} Fmax:{fmax:.3f}', flush=True)
 
                 # Early stopping check (using AUC)
@@ -561,7 +471,7 @@ if __name__ == '__main__':
                 final_logits_this_model.append(1.0 - fs.max().item())
 
         all_model_logits.append(final_logits_this_model)
-        mae_pos, auc, aupr, fmax = compute_metrics(final_logits_this_model)
+        mae_pos, auc, aupr, fmax = compute_metrics(final_logits_this_model) # Use util func
         all_model_metrics.append([mae_pos, auc, aupr, fmax])
         print(f"Model {i+1} Final Metrics: MAE(pos):{mae_pos:.3f} AUC:{auc:.3f} AUPR:{aupr:.3f} Fmax:{fmax:.3f}", flush=True)
 
@@ -573,7 +483,7 @@ if __name__ == '__main__':
         if all_model_logits:
              # Max aggregation
              max_agg_preds = torch.tensor(all_model_logits).max(dim=0)[0].numpy().tolist()
-             mae_pos_max, auc_max, aupr_max, fmax_max = compute_metrics(max_agg_preds)
+             mae_pos_max, auc_max, aupr_max, fmax_max = compute_metrics(max_agg_preds) # Use util func
              print(f"MAX Aggregation ({i+1} models): MAE(pos):{mae_pos_max:.3f} AUC:{auc_max:.3f} AUPR:{aupr_max:.3f} Fmax:{fmax_max:.3f}", flush=True)
 
     print("\n--- All models finished ---")
