@@ -15,22 +15,44 @@
 
 
 ## Run
-- Family Ontology
-    > `cd ./code/model`
 
-    > `python family.py`
-- Pizza Ontology
-    > `cd ./code/model`
+- **Single Fuzzy Model (using `train_single_model.py`)**
+    > This script trains a single fuzzy interpretation based on provided TBox and ABox axioms in Functional Syntax NNF.
 
-    > `python pizza.py`
-- Human Phenotype Ontology
-    > `cd ./data/HPO/ && unzip BIOGRID-ALL-4.4.211.tab.zip && cd ../../code/model`
+    > `cd ./scripts`
 
-    > `sh run_hpo.sh`
+    > Example using Pizza ontology data (assuming TBox and ABox files exist):
+    ```bash
+    python train_single_model.py \
+        --tbox_path ../data/Pizza/pizzaTBox.txt \
+        --abox_path ../data/Pizza/pizzaABox.txt \
+        --output_dir . \
+        --embedding_dim 128 \
+        --lr 0.001 \
+        --epochs 10 \
+        --output_membership_filename pizza \
+        --membership_format tsv
+    ```
+    > *Note*: The example above requires `pizzaTBox.txt` and `pizzaABox.txt`. The `pizzaTBox.txt` can be generated using the steps in "Data Preparation". An `pizzaABox.txt` file containing ABox axioms in Functional Syntax NNF needs to be provided separately. The script will output the trained model (`.pth`) and the membership matrix (`pizza.tsv` in this example) to the specified `output_dir` (the `scripts` directory in this case).
+
+- **Original Models (Family, Pizza, HPO)**
+    - Family Ontology
+        > `cd ./code/model`
+
+        > `python family.py`
+    - Pizza Ontology
+        > `cd ./code/model`
+
+        > `python pizza.py`
+    - Human Phenotype Ontology
+        > `cd ./data/HPO/ && unzip BIOGRID-ALL-4.4.211.tab.zip && cd ../../code/model`
+
+        > `sh run_hpo.sh`
 
 ## Data Preparation
-We elaborate the steps of data preparation to foster further research. This section is unnecessary for running the experiments.
-- Human Phenotype Ontology
+We elaborate the steps of data preparation to foster further research. This section is unnecessary for running the experiments unless generating input files for `train_single_model.py`.
+
+- **Human Phenotype Ontology (HPO)**
     - Download datasets
         > `cd ./data/HPO/`
 
@@ -47,12 +69,14 @@ We elaborate the steps of data preparation to foster further research. This sect
         > Select `ELK` as the logical reasoner
 
         > Save the inferred ontology as `hpInferred.owl`
-    - OWL to Axioms
+    - OWL to Axioms (Functional Syntax)
+        > *Note: These Groovy scripts convert OWL to a specific axiom format. Ensure the output is suitable or convert it to Functional Syntax NNF if needed for `train_single_model.py`.*
         > `groovy ../../code/ppc/GetTBox.groovy ./hp.owl > ./TBox.txt` # Adjusted path
 
         > `groovy ../../code/ppc/GetTBox.groovy ./hpInferred.owl > ./TBoxInferred.txt` # Adjusted path
+        > *(ABox generation might require different tools or scripts)*
 
-- Pizza Ontology
+- **Pizza Ontology**
     - Download datasets
         > `cd ./data/Pizza/`
 
@@ -65,7 +89,9 @@ We elaborate the steps of data preparation to foster further research. This sect
 
         > Save the inferred ontology as `pizzaInferred.owl`
 
-    - OWL to Axioms
+    - OWL to Axioms (Functional Syntax)
+        > *Note: These Groovy scripts convert OWL to a specific axiom format. Ensure the output is suitable or convert it to Functional Syntax NNF if needed for `train_single_model.py`.*
         > `groovy ../../code/ppc/GetTBox.groovy ./pizza.owl > ./pizzaTBox.txt` # Adjusted path
 
         > `groovy ../../code/ppc/GetTBox.groovy ./pizzaInferred.owl > ./pizzaTBoxInferred.txt` # Adjusted path
+        > *(ABox generation might require different tools or scripts, e.g., extracting ClassAssertion, ObjectPropertyAssertion)*
