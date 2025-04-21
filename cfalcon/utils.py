@@ -6,6 +6,7 @@ import pandas as pd
 import torch
 from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
 from pathlib import Path # Keep for type hints or potential future use
+from typing import List, Set, Tuple, Dict
 
 # --- File I/O ---
 
@@ -21,7 +22,8 @@ def save_obj(obj, path):
 
 def read_list_from_file(filepath):
     """Reads lines from a file into a list, stripping whitespace."""
-    if not Path(filepath).exists(): # Use Path directly
+    filepath = Path(filepath) # Ensure it's a Path object
+    if not filepath.exists(): # Use Path directly
         print(f"Warning: File not found {filepath}")
         return []
     with open(filepath, 'r', encoding='utf-8') as f:
@@ -29,13 +31,105 @@ def read_list_from_file(filepath):
 
 def read_tbox_test_axioms(filepath):
     """Reads axiom strings directly from a file, one per line."""
-    if not Path(filepath).exists():
+    filepath = Path(filepath) # Ensure it's a Path object
+    if not filepath.exists():
         print(f"Warning: Test TBox file not found: {filepath}")
         return []
     with open(filepath, 'r', encoding='utf-8') as f:
         return [line.strip() for line in f if line.strip()]
 
 # --- OWL Functional Syntax Handling ---
+
+# Regex to find potential IRIs or prefixed names (simplified)
+# Handles <...> and potentially things like :conceptName or prefix:name
+# Also captures owl:Thing and owl:Nothing explicitly
+ENTITY_RE = re.compile(r"(<[^>]+>|owl:Thing|owl:Nothing|\b\w+:\w+\b|\b:\w+\b)")
+
+def extract_vocabulary(axiom_list: List[str]) -> Tuple[Set[str], Set[str], Set[str]]:
+    """
+    Extracts concepts, roles, and individuals from a list of functional syntax axioms.
+
+    This is a best-effort extraction based on common patterns and might need
+    refinement depending on the exact syntax variations (e.g., prefixed names).
+    It relies on identifying the context (e.g., ClassAssertion vs ObjectPropertyAssertion)
+    to differentiate between entity types.
+
+    Args:
+        axiom_list: A list of OWL axioms in functional syntax.
+
+    Returns:
+        A tuple containing:
+        - Set of concept IRIs/names.
+        - Set of role IRIs/names.
+        - Set of individual IRIs/names.
+    """
+    concepts = set(['owl:Thing', 'owl:Nothing']) # Always include these
+    roles = set()
+    individuals = set()
+
+    # Patterns to identify context
+    class_assertion_match = re.compile(r"ClassAssertion\((.*)\s+([^)]+)\)")
+    obj_prop_assertion_match = re.compile(r"ObjectPropertyAssertion\(([^ ]+)\s+([^ ]+)\s+([^)]+)\)")
+    # Patterns for quantifiers (identifying roles and concepts within)
+    some_values_match = re.compile(r"ObjectSomeValuesFrom\(([^ ]+)\s+(.*)\)")
+    all_values_match = re.compile(r"ObjectAllValuesFrom\(([^ ]+)\s+(.*)\)")
+    # SubClassOf, EquivalentClasses, DisjointClasses primarily involve concepts
+    # SubObjectPropertyOf involves roles
+    sub_prop_match = re.compile(r"SubObjectPropertyOf\(([^ ]+)\s+([^)]+)\)")
+    # DifferentIndividuals involves individuals
+    diff_ind_match = re.compile(r"DifferentIndividuals\((.*)\)")
+
+    for axiom in axiom_list:
+        # Find all potential entities (IRIs, owl:Thing, owl:Nothing)
+        all_entities = set(ENTITY_RE.findall(axiom))
+
+        # Try to determine context
+        ca_match = class_assertion_match.search(axiom)
+        opa_match = obj_prop_assertion_match.search(axiom)
+        svf_match = some_values_match.search(axiom)
+        avf_match = all_values_match.search(axiom)
+        sp_match = sub_prop_match.search(axiom)
+        di_match = diff_ind_match.search(axiom)
+
+        if ca_match:
+            # Argument 1 is a class expression, Argument 2 is an individual
+            individuals.add(ca_match.group(2).strip())
+            # Concepts within the class expression are handled below
+        elif opa_match:
+            # Argument 1 is a role, Arguments 2 and 3 are individuals
+            roles.add(opa_match.group(1).strip())
+            individuals.add(opa_match.group(2).strip())
+            individuals.add(opa_match.group(3).strip())
+        elif svf_match:
+            # Argument 1 is a role, Argument 2 is a class expression
+            roles.add(svf_match.group(1).strip())
+        elif avf_match:
+            # Argument 1 is a role, Argument 2 is a class expression
+            roles.add(avf_match.group(1).strip())
+        elif sp_match:
+            # Both arguments are roles
+            roles.add(sp_match.group(1).strip())
+            roles.add(sp_match.group(2).strip())
+        elif di_match:
+            # All arguments are individuals
+            ind_args = di_match.group(1).strip().split()
+            individuals.update(ind_args)
+
+        # Assume remaining entities found are concepts unless identified as roles/individuals
+        # This is an approximation. A full parser would be needed for perfect accuracy.
+        potential_concepts = all_entities - roles - individuals
+        concepts.update(potential_concepts)
+
+
+    # Clean up potential misclassifications (e.g., if owl:Thing was somehow added to roles)
+    individuals.discard('owl:Thing')
+    individuals.discard('owl:Nothing')
+    roles.discard('owl:Thing')
+    roles.discard('owl:Nothing')
+
+
+    return concepts, roles, individuals
+
 
 def reconstruct_functional_syntax(axiom_type, parts):
     """
