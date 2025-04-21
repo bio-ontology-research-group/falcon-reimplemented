@@ -18,21 +18,67 @@ import org.semanticweb.owlapi.normalform.*
 import org.semanticweb.owlapi.util.mansyntax.ManchesterOWLSyntaxParser // Needed? Maybe not directly
 import org.semanticweb.owlapi.manchestersyntax.renderer.ManchesterOWLSyntaxObjectRenderer // For potential rendering options
 import org.semanticweb.owlapi.functional.renderer.OWLFunctionalSyntaxRenderer // For functional syntax output
+import java.nio.file.Paths
+import java.nio.file.Path
 
 // --- Basic Setup ---
 // Configure logging to avoid excessive output from OWLAPI/dependencies
 System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "warn")
 
 // --- Argument Handling ---
-if (args.length == 0) {
-    println "Usage: groovy OWLPreprocessor.groovy <path/to/ontology.owl> [output/path/nnf_ontology.owl]"
-    println "       Outputs statistics and NNF axioms (Functional Syntax) to console."
-    println "       If an output path is provided, saves the NNF ontology there as well."
+def usage() {
+    println """
+Usage: groovy OWLPreprocessor.groovy <path/to/ontology.owl> [options]
+
+Options:
+  <output/path/nnf_ontology.owl>   (Optional) Path to save the combined NNF ontology.
+                                     If provided without --split, saves all NNF axioms here.
+  --split <output/base/path>       (Optional) Split NNF axioms into ABox, TBox, RBox files.
+                                     Generates <base_path>_abox.owl, <base_path>_tbox.owl, etc.
+                                     If used, the single output path argument is ignored.
+
+Description:
+  Loads an OWL ontology, prints statistics, converts logical axioms to
+  Negation Normal Form (NNF), and outputs the NNF axioms.
+  By default, NNF axioms are printed to the console (Functional Syntax).
+  Use output options to save NNF axioms to files.
+"""
+}
+
+if (args.length == 0 || args[0] in ['-h', '--help']) {
+    usage()
     return
 }
+
 String ontologyPath = args[0]
 File ontologyFile = new File(ontologyPath)
-String outputPath = (args.length > 1) ? args[1] : null
+String singleOutputPath = null
+String splitBasePath = null
+boolean splitOutput = false
+
+// Parse options
+int i = 1
+while (i < args.length) {
+    if (args[i] == '--split' && i + 1 < args.length) {
+        splitOutput = true
+        splitBasePath = args[i+1]
+        i += 2
+    } else if (!args[i].startsWith('--') && singleOutputPath == null && !splitOutput) {
+        // Assume it's the single output path if not splitting and not already set
+        singleOutputPath = args[i]
+        i += 1
+    } else {
+        println "Error: Invalid argument or combination: ${args[i]}"
+        usage()
+        return
+    }
+}
+
+if (splitOutput && singleOutputPath != null) {
+    println "Warning: Single output path (${singleOutputPath}) ignored because --split option is used."
+    singleOutputPath = null // Ensure single output is not processed
+}
+
 
 if (!ontologyFile.exists()) {
     println "Error: Ontology file not found at ${ontologyPath}"
@@ -112,48 +158,132 @@ if (skippedAxioms > 0) {
 }
 println "------------------------------------------------\n"
 
-
-// --- Output NNF Axioms in Functional Syntax (Console) ---
-println "--- NNF Axioms (Functional Syntax) ---"
-// Setup renderer
-OWLFunctionalSyntaxRenderer renderer = new OWLFunctionalSyntaxRenderer()
-StringDocumentTarget target = new StringDocumentTarget() // To capture output as string
-
-// Use a PrefixManager for cleaner output if prefixes are defined
+// --- Prepare Prefix Manager for Output ---
 DefaultPrefixManager pm = new DefaultPrefixManager(null, null, ont.getFormat().asPrefixOWLDocumentFormat().getPrefixName2PrefixMap())
-renderer.setPrefixManager(pm)
-
-nnfAxioms.each { nnfAxiom ->
-    // Render each axiom
-    target.reset() // Clear the target for the next axiom
-    try {
-        // Render axiom using the ontology's prefix manager if available
-        renderer.render(ont, nnfAxiom, target)
-        println target.toString().trim() // Print the rendered axiom
-    } catch (Exception e) {
-        println "Error rendering NNF axiom: ${nnfAxiom.toString().take(100)}... Error: ${e.message}"
+// Ensure default prefix is set if one exists
+String defaultPrefix = pm.getDefaultPrefix()
+if (defaultPrefix == null) {
+    // Attempt to find a common base IRI to use as default prefix if none is set
+    Optional<IRI> ontIRI = ont.getOntologyID().getOntologyIRI()
+    if (ontIRI.isPresent()) {
+        String iriStr = ontIRI.get().toString()
+        // Simple heuristic: use the IRI up to the last # or /
+        int lastHash = iriStr.lastIndexOf('#')
+        int lastSlash = iriStr.lastIndexOf('/')
+        int splitPoint = Math.max(lastHash, lastSlash)
+        if (splitPoint > 0) {
+            defaultPrefix = iriStr.substring(0, splitPoint + 1)
+            pm.setDefaultPrefix(defaultPrefix)
+            println "INFO: Setting default prefix for output: ${defaultPrefix}"
+        }
     }
 }
-println "--------------------------------------"
+if (defaultPrefix != null && !defaultPrefix.endsWith(":") && !defaultPrefix.endsWith("/")) {
+     // Ensure the default prefix ends appropriately if we set it manually or copy it
+     // This might be overly cautious depending on OWLAPI version behavior
+     // pm.setDefaultPrefix(defaultPrefix + "#"); // Or use '/' - consistency is key
+}
 
-// --- Optional: Save NNF Ontology to File ---
-if (outputPath) {
+
+// --- Helper Function to Save Axioms ---
+def saveAxiomsToFile(List<OWLAxiom> axiomsToSave, String filePath, OWLOntologyManager mgr, PrefixManager prefixMgr) {
+    if (axiomsToSave.isEmpty()) {
+        println "INFO: No axioms to save for ${Paths.get(filePath).getFileName()}."
+        return
+    }
+    OWLOntology tempOntology = null
     try {
-        println "\nSaving NNF ontology to: ${outputPath}"
-        // Create a new ontology containing only the NNF axioms
-        OWLOntology nnfOntology = manager.createOntology(nnfAxioms)
+        println "Saving ${axiomsToSave.size()} axioms to: ${filePath}"
+        tempOntology = mgr.createOntology(new HashSet<>(axiomsToSave)) // Use Set for createOntology
 
-        // Set prefixes for the output format
+        // Set up format and prefixes
         FunctionalSyntaxDocumentFormat functionalSyntaxFormat = new FunctionalSyntaxDocumentFormat()
-        functionalSyntaxFormat.copyPrefixesFrom(pm)
-        functionalSyntaxFormat.setPrefix(":", pm.getDefaultPrefix()) // Ensure default prefix is set
+        functionalSyntaxFormat.copyPrefixesFrom(prefixMgr)
+        if (prefixMgr.getDefaultPrefix() != null) {
+             functionalSyntaxFormat.setPrefix(":", prefixMgr.getDefaultPrefix()) // Ensure default prefix is explicitly set for format
+        }
 
-        // Save the NNF ontology
-        File outputFile = new File(outputPath)
-        manager.saveOntology(nnfOntology, functionalSyntaxFormat, IRI.create(outputFile.toURI()))
-        println "NNF ontology saved successfully."
+
+        // Save the ontology
+        File outputFile = new File(filePath)
+        outputFile.getParentFile().mkdirs() // Ensure directory exists
+        mgr.saveOntology(tempOntology, functionalSyntaxFormat, IRI.create(outputFile.toURI()))
+        println "Saved successfully: ${filePath}"
     } catch (Exception e) {
-        println "Error saving NNF ontology to file: ${e.message}"
+        println "Error saving ontology to file ${filePath}: ${e.message}"
         // e.printStackTrace()
+    } finally {
+        // Clean up the temporary ontology
+        if (tempOntology != null) {
+            mgr.removeOntology(tempOntology)
+        }
     }
 }
+
+
+// --- Output / Save NNF Axioms ---
+
+if (splitOutput) {
+    println "--- Splitting NNF Axioms into ABox, TBox, RBox files ---"
+    List<OWLAxiom> nnfAboxAxioms = []
+    List<OWLAxiom> nnfTboxAxioms = []
+    List<OWLAxiom> nnfRboxAxioms = []
+
+    nnfAxioms.each { nnfAxiom ->
+        if (nnfAxiom.isAboxAxiom()) {
+            nnfAboxAxioms.add(nnfAxiom)
+        }
+        // Note: TBox includes RBox according to OWLAPI isTboxAxiom() definition.
+        // We check RBox first to separate them cleanly.
+        if (nnfAxiom.isRboxAxiom()) {
+            nnfRboxAxioms.add(nnfAxiom)
+        } else if (nnfAxiom.isTboxAxiom()) { // Catches remaining TBox axioms (like SubClassOf)
+            nnfTboxAxioms.add(nnfAxiom)
+        }
+        // Axioms like Declarations might not fall into A/T/RBox, handle if necessary
+        // else { println "DEBUG: Axiom not classified as ABox/TBox/RBox: ${nnfAxiom}" }
+    }
+
+    println "Categorized NNF axioms: ABox(${nnfAboxAxioms.size()}), TBox(${nnfTboxAxioms.size()}), RBox(${nnfRboxAxioms.size()})"
+
+    // Define output filenames
+    String aboxPath = "${splitBasePath}_abox.owl"
+    String tboxPath = "${splitBasePath}_tbox.owl"
+    String rboxPath = "${splitBasePath}_rbox.owl"
+
+    // Save each category
+    saveAxiomsToFile(nnfAboxAxioms, aboxPath, manager, pm)
+    saveAxiomsToFile(nnfTboxAxioms, tboxPath, manager, pm)
+    saveAxiomsToFile(nnfRboxAxioms, rboxPath, manager, pm)
+
+    println "---------------------------------------------------------"
+
+} else {
+    // Original behavior: Print to console and optionally save to single file
+
+    println "--- NNF Axioms (Functional Syntax) ---"
+    // Setup renderer
+    OWLFunctionalSyntaxRenderer renderer = new OWLFunctionalSyntaxRenderer()
+    StringDocumentTarget target = new StringDocumentTarget() // To capture output as string
+    renderer.setPrefixManager(pm)
+
+    nnfAxioms.each { nnfAxiom ->
+        // Render each axiom
+        target.reset() // Clear the target for the next axiom
+        try {
+            // Render axiom using the ontology's prefix manager if available
+            renderer.render(ont, nnfAxiom, target)
+            println target.toString().trim() // Print the rendered axiom
+        } catch (Exception e) {
+            println "Error rendering NNF axiom: ${nnfAxiom.toString().take(100)}... Error: ${e.message}"
+        }
+    }
+    println "--------------------------------------"
+
+    // Optional: Save combined NNF Ontology to File
+    if (singleOutputPath) {
+        saveAxiomsToFile(nnfAxioms, singleOutputPath, manager, pm)
+    }
+}
+
+println "Processing finished."
