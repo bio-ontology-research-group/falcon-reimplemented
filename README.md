@@ -33,7 +33,27 @@
         --output_membership_filename pizza \
         --membership_format tsv
     ```
-    > *Note*: The example above requires `pizzaTBox.txt` and `pizzaABox.txt`. The `pizzaTBox.txt` can be generated using the steps in "Data Preparation". An `pizzaABox.txt` file containing ABox axioms in Functional Syntax NNF needs to be provided separately. The script will output the trained model (`.pth`) and the membership matrix (`pizza.tsv` in this example) to the specified `output_dir` (the `scripts` directory in this case).
+    > *Note*: The example above requires `pizzaTBox.txt` and `pizzaABox.txt`. The `pizzaTBox.txt` can be generated using the steps in "Data Preparation". An `pizzaABox.txt` file containing ABox axioms in Functional Syntax NNF needs to be provided separately. The script will output the trained model (`.pth`) and the individual concept membership matrix (`pizza.tsv` in this example) to the specified `output_dir` (the `scripts` directory in this case).
+
+- **Multi-Model Fuzzy Ontology (using `train_ontology_model.py`)**
+    > This script trains multiple fuzzy interpretations (`--num_models`) simultaneously and uses their aggregated output for semantic entailment, based on provided TBox and ABox axioms in Functional Syntax NNF.
+
+    > `cd ./scripts`
+
+    > Example using Pizza ontology data (assuming TBox and ABox files exist):
+    ```bash
+    python train_ontology_model.py \
+        --tbox_path ../data/Pizza/pizzaTBox.txt \
+        --abox_path ../data/Pizza/pizzaABox.txt \
+        --output_dir . \
+        --embedding_dim 128 \
+        --lr 0.001 \
+        --epochs 10 \
+        --num_models 3 \
+        --output_membership_filename pizza3 \
+        --membership_format csv
+    ```
+    > *Note*: The example above requires `pizzaTBox.txt` and `pizzaABox.txt`. The `pizzaTBox.txt` can be generated using the steps in "Data Preparation". An `pizzaABox.txt` file containing ABox axioms in Functional Syntax NNF needs to be provided separately. The script will output the trained multi-model (`.pth`) and the aggregated class assertion entailment matrix (`pizza3.csv` in this example) to the specified `output_dir` (the `scripts` directory in this case).
 
 - **Original Models (Family, Pizza, HPO)**
     - Family Ontology
