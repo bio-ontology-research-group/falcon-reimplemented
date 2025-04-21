@@ -41,15 +41,14 @@ def split_arguments(args_str):
             balance -= 1
         # Split only on spaces that are *not* inside nested parentheses
         elif char == ' ' and balance == 0:
-            # Check if the space is genuinely separating arguments
-            # Avoid splitting inside IRIs or literals if possible (though this is hard without full parsing)
-            # A simple heuristic: split only if the next char isn't part of the current arg continuation
-            # For now, stick to basic space splitting at balance 0
+            # Add the argument found before the space
             args.append(args_str[current_arg_start:i].strip())
+            # Update the start for the next argument
             current_arg_start = i + 1
-    # Add the last argument
+    # Add the last argument (from the last split point to the end)
     args.append(args_str[current_arg_start:].strip())
-    return [arg for arg in args if arg] # Filter out empty strings
+    # Filter out any potential empty strings resulting from multiple spaces
+    return [arg for arg in args if arg]
 
 
 # --- The Fuzzy OWL Model ---
@@ -298,11 +297,18 @@ class FuzzyOWLModel(nn.Module):
                          if inner_intersection_match:
                              inner_args_str = inner_intersection_match.group(1)
                              inner_args = split_arguments(inner_args_str)
-                             if len(inner_args) == 2:
+                             if len(inner_args) >= 2: # Handle n-ary intersection inside Disjoint NNF
                                  # This is the DisjointClasses pattern
-                                 c1_fs = self.forward(inner_args[0])
-                                 c2_fs = self.forward(inner_args[1])
-                                 intersection_fs = self._logical_and(c1_fs, c2_fs)
+                                 # Compute intersection of inner_args first
+                                 fs_list = [self.forward(arg) for arg in inner_args]
+                                 if not fs_list: # Should not happen if len >= 2
+                                     raise ValueError(f"Empty argument list inside inner ObjectIntersectionOf for Disjoint NNF: {arg1_str}")
+
+                                 # Iteratively apply AND
+                                 intersection_fs = fs_list[0]
+                                 for i in range(1, len(fs_list)):
+                                     intersection_fs = self._logical_and(intersection_fs, fs_list[i])
+
                                  nothing_fs = self.forward("owl:Nothing")
                                  # Return SubClassOf(intersection, Nothing)
                                  return self._logical_subsethood(intersection_fs, nothing_fs) # Returns scalar
@@ -314,16 +320,23 @@ class FuzzyOWLModel(nn.Module):
 
             # --- Standard Class Expressions (Return Fuzzy Set) ---
             if constructor == "ObjectIntersectionOf":
-                # If not the special axiom pattern above, treat as standard intersection
-                if len(args) != 2: raise ValueError(f"ObjectIntersectionOf expects 2 arguments, got {len(args)} in '{axiom_str}'")
-                fs1 = self.forward(args[0])
-                fs2 = self.forward(args[1])
-                return self._logical_and(fs1, fs2)
+                if len(args) < 2: raise ValueError(f"ObjectIntersectionOf expects at least 2 arguments, got {len(args)} in '{axiom_str}'")
+                # Handle n-ary intersection
+                fs_list = [self.forward(arg) for arg in args]
+                # Iteratively apply AND
+                result_fs = fs_list[0]
+                for i in range(1, len(fs_list)):
+                    result_fs = self._logical_and(result_fs, fs_list[i])
+                return result_fs
             elif constructor == "ObjectUnionOf":
-                if len(args) != 2: raise ValueError(f"ObjectUnionOf expects 2 arguments, got {len(args)} in '{axiom_str}'")
-                fs1 = self.forward(args[0])
-                fs2 = self.forward(args[1])
-                return self._logical_or(fs1, fs2)
+                if len(args) < 2: raise ValueError(f"ObjectUnionOf expects at least 2 arguments, got {len(args)} in '{axiom_str}'")
+                # Handle n-ary union
+                fs_list = [self.forward(arg) for arg in args]
+                # Iteratively apply OR
+                result_fs = fs_list[0]
+                for i in range(1, len(fs_list)):
+                    result_fs = self._logical_or(result_fs, fs_list[i])
+                return result_fs
             elif constructor == "ObjectComplementOf":
                 if len(args) != 1: raise ValueError(f"ObjectComplementOf expects 1 argument, got {len(args)} in '{axiom_str}'")
                 fs = self.forward(args[0])
@@ -355,20 +368,40 @@ class FuzzyOWLModel(nn.Module):
                 c2_fs = self.forward(args[1])
                 return self._logical_subsethood(c1_fs, c2_fs)
             elif constructor == "EquivalentClasses":
-                # Assuming binary equivalence for now
-                if len(args) != 2: raise ValueError(f"EquivalentClasses expects 2 arguments, got {len(args)} in '{axiom_str}'")
-                c1_fs = self.forward(args[0])
-                c2_fs = self.forward(args[1])
-                return self._logical_equivalence(c1_fs, c2_fs)
+                # Handle n-ary equivalence: A <=> B <=> C ... <=> Z
+                # Equivalent to: A <= B, B <= C, ..., Y <= Z, Z <= A
+                if len(args) < 2: raise ValueError(f"EquivalentClasses expects at least 2 arguments, got {len(args)} in '{axiom_str}'")
+                fs_list = [self.forward(arg) for arg in args]
+                subsethood_degrees = []
+                for i in range(len(fs_list)):
+                    fs1 = fs_list[i]
+                    fs2 = fs_list[(i + 1) % len(fs_list)] # Wrap around for Z <= A
+                    subsethood_degrees.append(self._logical_subsethood(fs1, fs2))
+
+                # The overall truth is the conjunction (minimum) of all subsethood degrees
+                if not subsethood_degrees: return torch.tensor(1.0, device=self.device) # Vacuously true if < 2 args? Should be caught earlier.
+                all_subsethoods = torch.stack(subsethood_degrees)
+                equivalence_degree, _ = torch.min(all_subsethoods, dim=0)
+                return equivalence_degree
+
             elif constructor == "DisjointClasses":
-                # Disjoint(C, D) <=> (C and D) <= Nothing
-                # Assuming binary disjointness for now
-                if len(args) != 2: raise ValueError(f"DisjointClasses expects 2 arguments, got {len(args)} in '{axiom_str}'")
-                c1_fs = self.forward(args[0])
-                c2_fs = self.forward(args[1])
-                intersection_fs = self._logical_and(c1_fs, c2_fs)
+                # Handle n-ary disjointness: Disjoint(C1, C2, ..., Cn)
+                # Equivalent to: Intersection(Ci, Cj) <= Nothing for all i != j
+                if len(args) < 2: raise ValueError(f"DisjointClasses expects at least 2 arguments, got {len(args)} in '{axiom_str}'")
+                fs_list = [self.forward(arg) for arg in args]
+                disjoint_degrees = []
                 nothing_fs = self.forward("owl:Nothing")
-                return self._logical_subsethood(intersection_fs, nothing_fs)
+                for i in range(len(fs_list)):
+                    for j in range(i + 1, len(fs_list)):
+                        intersection_fs = self._logical_and(fs_list[i], fs_list[j])
+                        disjoint_degrees.append(self._logical_subsethood(intersection_fs, nothing_fs))
+
+                # The overall truth is the conjunction (minimum) of all pairwise disjointness degrees
+                if not disjoint_degrees: return torch.tensor(1.0, device=self.device) # Vacuously true if < 2 args
+                all_disjointness = torch.stack(disjoint_degrees)
+                disjoint_degree, _ = torch.min(all_disjointness, dim=0)
+                return disjoint_degree
+
             # TODO: Add SubObjectPropertyOf, Domain, Range etc. if needed
 
             # --- ABox Axioms (Return Scalar Truth Value) ---
@@ -413,7 +446,7 @@ class FuzzyOWLModel(nn.Module):
 # --- Example Usage (Illustrative) ---
 if __name__ == '__main__':
     # 1. Define Vocabulary Mappings (Example)
-    concepts = {"<urn:A>": 0, "<urn:B>": 1, "<urn:C>": 2, "owl:Thing": 3, "owl:Nothing": 4}
+    concepts = {"<urn:A>": 0, "<urn:B>": 1, "<urn:C>": 2, "<urn:D>": 3, "owl:Thing": 4, "owl:Nothing": 5}
     roles = {"<urn:r>": 0}
     individuals = {"<urn:i>": 0, "<urn:j>": 1}
 
@@ -430,8 +463,8 @@ if __name__ == '__main__':
 
     # 3. Define Axioms (NNF Functional Syntax)
     axiom_subclass = "SubClassOf(<urn:A> <urn:B>)"
-    axiom_equiv = "EquivalentClasses(<urn:A> <urn:B>)"
-    axiom_disjoint = "DisjointClasses(<urn:A> <urn:B>)"
+    axiom_equiv = "EquivalentClasses(<urn:A> <urn:B> <urn:C>)" # N-ary example
+    axiom_disjoint = "DisjointClasses(<urn:A> <urn:B> <urn:C>)" # N-ary example
     axiom_class_assert = "ClassAssertion(<urn:A> <urn:i>)"
     axiom_prop_assert = "ObjectPropertyAssertion(<urn:r> <urn:i> <urn:j>)"
     axiom_some = "SubClassOf(<urn:A> ObjectSomeValuesFrom(<urn:r> <urn:B>))"
@@ -440,9 +473,13 @@ if __name__ == '__main__':
     axiom_nnf_subclass = "ObjectIntersectionOf(<urn:A> ObjectComplementOf(<urn:B>))"
     # Axiom representing DisjointClasses(<urn:A>, <urn:B>) in NNF -> SubClassOf(Intersection(A,B), Nothing)
     axiom_nnf_disjoint = "ObjectIntersectionOf(ObjectIntersectionOf(<urn:A> <urn:B>) ObjectComplementOf(owl:Nothing))"
+    # Axiom representing DisjointClasses(<urn:A>, <urn:B>, <urn:C>) in NNF
+    axiom_nnf_disjoint_nary = "ObjectIntersectionOf(ObjectIntersectionOf(<urn:A> <urn:B> <urn:C>) ObjectComplementOf(owl:Nothing))"
+
 
     # Class Expression
-    class_expr_intersect = "ObjectIntersectionOf(<urn:A> <urn:B>)"
+    class_expr_intersect = "ObjectIntersectionOf(<urn:A> <urn:B> <urn:C>)" # N-ary example
+    class_expr_union = "ObjectUnionOf(<urn:A> <urn:B> <urn:C> <urn:D>)" # N-ary example
 
 
     # 4. Evaluate Axioms and Expressions
@@ -453,9 +490,11 @@ if __name__ == '__main__':
         tv_class_assert = model(axiom_class_assert)
         tv_prop_assert = model(axiom_prop_assert)
         tv_some = model(axiom_some)
-        tv_nnf_subclass = model(axiom_nnf_subclass) # Should now work
-        tv_nnf_disjoint = model(axiom_nnf_disjoint) # Should now work
-        fs_intersect = model(class_expr_intersect)   # Should return fuzzy set
+        tv_nnf_subclass = model(axiom_nnf_subclass)
+        tv_nnf_disjoint = model(axiom_nnf_disjoint)
+        tv_nnf_disjoint_nary = model(axiom_nnf_disjoint_nary)
+        fs_intersect = model(class_expr_intersect)
+        fs_union = model(class_expr_union)
 
     print(f"Axiom: {axiom_subclass} -> Truth: {tv_subclass.item():.4f}")
     print(f"Axiom: {axiom_equiv} -> Truth: {tv_equiv.item():.4f}")
@@ -465,5 +504,6 @@ if __name__ == '__main__':
     print(f"Axiom: {axiom_some} -> Truth: {tv_some.item():.4f}")
     print(f"Axiom (NNF): {axiom_nnf_subclass} -> Truth: {tv_nnf_subclass.item():.4f}")
     print(f"Axiom (NNF): {axiom_nnf_disjoint} -> Truth: {tv_nnf_disjoint.item():.4f}")
+    print(f"Axiom (NNF): {axiom_nnf_disjoint_nary} -> Truth: {tv_nnf_disjoint_nary.item():.4f}")
     print(f"Class Expr: {class_expr_intersect} -> Fuzzy Set (shape {fs_intersect.shape}): {fs_intersect.cpu().numpy()}")
-
+    print(f"Class Expr: {class_expr_union} -> Fuzzy Set (shape {fs_union.shape}): {fs_union.cpu().numpy()}")
