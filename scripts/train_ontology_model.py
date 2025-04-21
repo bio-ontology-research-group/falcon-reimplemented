@@ -38,7 +38,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train a Fuzzy Ontology Model (multi-model) on TBox and ABox axioms.")
     parser.add_argument('--tbox_path', type=str, required=True, help='Path to the TBox file (functional syntax NNF, one axiom per line).')
     parser.add_argument('--abox_path', type=str, required=True, help='Path to the ABox file (functional syntax NNF, one axiom per line).')
-    parser.add_argument('--output_dir', type=str, default='output_ontology_model', help='Directory to save the trained ontology model.')
+    parser.add_argument('--output_dir', type=str, default='output_ontology_model', help='Directory to save the trained ontology model and membership matrix.')
     parser.add_argument('--num_models', type=int, default=5, help='Number of individual fuzzy models to create.')
     parser.add_argument('--embedding_dim', type=int, default=50, help='Dimension for embeddings in each model.')
     parser.add_argument('--fuzzy_logic', type=str, default='godel', choices=['godel', 'lukasiewicz', 'product'], help='Type of fuzzy logic to use.')
@@ -47,7 +47,9 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=32, help='Number of axioms to process before optimizer step.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility.')
     parser.add_argument('--device', type=str, default='auto', help='Device to use (cpu, cuda, or auto).')
-    # Removed membership matrix output for now, can be added back if needed for multi-model context
+    parser.add_argument('--output_membership_filename', type=str, default='entailment_matrix', help='Base filename for the output class assertion entailment matrix (extension .csv or .tsv added automatically).')
+    parser.add_argument('--membership_format', type=str, default='csv', choices=['csv', 'tsv'], help='Format for the output entailment matrix.')
+
 
     return parser.parse_args()
 
@@ -133,7 +135,7 @@ def main():
     num_individuals = len(individual_list) # Pass actual count
 
     if num_individuals == 0:
-        print("Warning: No individuals found in the vocabulary. ABox axioms will be skipped during training.")
+        print("Warning: No individuals found in the vocabulary. ABox axioms will be skipped during training and entailment matrix cannot be generated.")
 
     # --- Initialize Model ---
     print(f"Initializing FuzzyOntologyModel with {args.num_models} individual models...")
@@ -280,6 +282,64 @@ def main():
         'args': args,
     }, model_save_path)
     print("Ontology model saved.")
+
+    # --- Evaluate and Save Class Assertion Entailment Matrix ---
+    if num_individuals > 0 and num_concepts > 0:
+        print("\nCalculating Class Assertion entailment matrix...")
+        model.eval() # Set model to evaluation mode
+
+        entailment_data = {}
+        # Filter out owl:Thing and owl:Nothing if desired, or keep them
+        concepts_to_evaluate = [c for c in concept_list if c not in ['owl:Thing', 'owl:Nothing']]
+        # concepts_to_evaluate = concept_list # Uncomment to include Thing/Nothing
+
+        with torch.no_grad():
+            for concept_name in tqdm(concepts_to_evaluate, desc="Evaluating concepts"):
+                concept_entailments = []
+                for individual_name in individual_list:
+                    # Construct ClassAssertion axiom string
+                    assertion_axiom = f"ClassAssertion({concept_name} {individual_name})"
+                    try:
+                        # Get the aggregated entailment degree for the assertion
+                        entailment_degree = model(assertion_axiom)
+                        concept_entailments.append(entailment_degree.item())
+                    except Exception as e:
+                        print(f"Warning: Error evaluating '{assertion_axiom}': {e}. Using NaN.")
+                        concept_entailments.append(np.nan)
+                entailment_data[concept_name] = concept_entailments
+
+        if entailment_data:
+            # Create DataFrame (Individuals as index, Concepts as columns)
+            entailment_df = pd.DataFrame(entailment_data, index=individual_list)
+            entailment_df.index.name = 'Individual'
+
+            # Determine file path and separator
+            entailment_save_path = output_dir / f"{args.output_membership_filename}.{args.membership_format}"
+            separator = '\t' if args.membership_format == 'tsv' else ','
+
+            print(f"Saving entailment matrix to {entailment_save_path}...")
+            try:
+                entailment_df.to_csv(entailment_save_path, sep=separator, float_format='%.4f', na_rep='NaN')
+                print(f"Entailment matrix saved as {args.membership_format.upper()}.")
+
+                # Optionally print part or all of the matrix
+                if args.membership_format == 'tsv':
+                    print("\nClass Assertion Entailment Matrix (Full):")
+                    # Use to_string() to print the entire DataFrame
+                    with pd.option_context('display.max_rows', None, 'display.max_columns', None, 'display.width', 1000):
+                         print(entailment_df.to_string())
+                else: # Default to printing head for CSV
+                    print("\nClass Assertion Entailment Matrix (Sample):")
+                    print(entailment_df.head())
+
+            except Exception as e:
+                print(f"Error saving entailment matrix: {e}")
+        else:
+            print("No entailment data was generated (possibly due to errors or no concepts/individuals).")
+
+    else:
+        print("\nSkipping Class Assertion entailment matrix generation as no individuals or concepts were found.")
+
 
     # --- Optional: Evaluate Entailment Degree on Training Data (Example) ---
     # You might want to add a separate evaluation step using test data later
