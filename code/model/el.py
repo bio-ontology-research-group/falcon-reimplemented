@@ -119,7 +119,7 @@ def get_data(cfg):
 
     # Load ABox data
     try:
-        abox_ec = pd.read_csv(data_path / "abox_ec.tsv", sep='\t', header=None, names=['h', 't'], keep_default_na=False)
+        abox_ec = pd.read_csv(data_path / "abox_ec.tsv", sep='\t', header=None, names=['h', 't'], keep_default_na=False, dtype=str) # Read as string initially
         # Add relation column (assuming a default if not present, e.g., 'hasPhenotype' or 'isA')
         # The original el.py used 'hasPhenotype'. Let's assume this relation IRI exists or add it.
         pheno_relation = '<http://hasPhenotype>' # Example IRI, adjust if needed
@@ -135,7 +135,7 @@ def get_data(cfg):
 
 
     try:
-        abox_ee = pd.read_csv(data_path / "abox_ee.tsv", sep='\t', header=None, names=['h', 'r', 't'], keep_default_na=False)
+        abox_ee = pd.read_csv(data_path / "abox_ee.tsv", sep='\t', header=None, names=['h', 'r', 't'], keep_default_na=False, dtype=str) # Read as string initially
     except FileNotFoundError:
         print(f"Warning: {data_path / 'abox_ee.tsv'} not found. ABox EE will be empty.")
         abox_ee = pd.DataFrame(columns=['h', 'r', 't'])
@@ -152,7 +152,7 @@ def get_data(cfg):
                 parts = line.strip().split('\t')
                 if not parts: continue
                 axiom_type = parts[0]
-                axiom_parts = parts[1:]
+                axiom_parts = parts[1:] # Keep as strings
 
                 # Reconstruct functional syntax
                 reconstructed = reconstruct_functional_syntax(axiom_type, axiom_parts)
@@ -164,7 +164,7 @@ def get_data(cfg):
                             name_match = re.match(r'ObjectIntersectionOf\((<.*?>|owl:Thing) ObjectComplementOf\((<.*?>|owl:Thing)\)\)', axiom_str, re.M|re.I)
                             if name_match:
                                 matched = name_match.groups()
-                                tbox_name_list.append([matched[0], 'subClassOf', matched[1]])
+                                tbox_name_list.append([matched[0], 'subClassOf', matched[1]]) # Keep IRIs
                             else:
                                 tbox_desc.append(axiom_str)
                     else:
@@ -173,7 +173,7 @@ def get_data(cfg):
                         name_match = re.match(r'ObjectIntersectionOf\((<.*?>|owl:Thing) ObjectComplementOf\((<.*?>|owl:Thing)\)\)', axiom_str, re.M|re.I)
                         if name_match:
                             matched = name_match.groups()
-                            tbox_name_list.append([matched[0], 'subClassOf', matched[1]])
+                            tbox_name_list.append([matched[0], 'subClassOf', matched[1]]) # Keep IRIs
                         else:
                             tbox_desc.append(axiom_str)
     except FileNotFoundError:
@@ -182,82 +182,92 @@ def get_data(cfg):
     tbox_name = pd.DataFrame(tbox_name_list, columns=['h', 'r', 't'])
 
     # Ensure all concepts/relations from loaded axioms are in the lists
-    for c in pd.concat([tbox_name['h'], tbox_name['t'], abox_ec['t']]).unique():
-        if c not in all_concepts_list: all_concepts_list.append(c)
-    for r in pd.concat([tbox_name['r'], abox_ec['r'], abox_ee['r']]).unique():
-         if r not in all_relations_list: all_relations_list.append(r)
-    # Entities are trickier if new ones appear only in ABox
-    abox_entities = set(abox_ec['h']) | set(abox_ee['h']) | set(abox_ee['t'])
-    new_entities = abox_entities - set(all_entities_list)
-    if new_entities:
-        print(f"Warning: Found {len(new_entities)} entities in ABox not listed in entities.txt. Adding them.")
-        all_entities_list.extend(list(new_entities))
+    # Collect unique IRIs before creating dictionaries
+    all_cs = set(all_concepts_list)
+    all_rs = set(all_relations_list)
+    all_es = set(all_entities_list)
 
-    # Generate created entities for ABox EC
-    abox_ec_created = get_abox_ec_created(all_concepts_list, k=cfg.n_abox_ec_created)
+    if not tbox_name.empty:
+        all_cs.update(tbox_name['h'].unique())
+        all_cs.update(tbox_name['t'].unique())
+        all_rs.update(tbox_name['r'].unique())
+    if not abox_ec.empty:
+        all_es.update(abox_ec['h'].unique())
+        all_cs.update(abox_ec['t'].unique())
+        all_rs.update(abox_ec['r'].unique())
+    if not abox_ee.empty:
+        all_es.update(abox_ee['h'].unique())
+        all_es.update(abox_ee['t'].unique())
+        all_rs.update(abox_ee['r'].unique())
+
+    # Generate created entities for ABox EC (using updated concept list)
+    abox_ec_created = get_abox_ec_created(list(all_cs), k=cfg.n_abox_ec_created)
     created_entities_list = list(abox_ec_created['h'].unique())
+    all_es.update(created_entities_list) # Add created entity IRIs to the set
 
-    # Create dictionaries (ensure stable order)
-    all_concepts_list = sorted(list(set(all_concepts_list)))
-    all_relations_list = sorted(list(set(all_relations_list)))
-    all_entities_list = sorted(list(set(all_entities_list)))
-    created_entities_list = sorted(list(set(created_entities_list)))
+    # Create dictionaries from the final sets (ensure stable order)
+    all_concepts_list = sorted(list(all_cs))
+    all_relations_list = sorted(list(all_rs))
+    all_entities_list = sorted(list(all_es - set(created_entities_list))) # Base entities
+    created_entities_list = sorted(created_entities_list) # Created entities
 
     c_dict = {k: v for v, k in enumerate(all_concepts_list)}
-    e_dict = {k: v for v, k in enumerate(all_entities_list)}
+    e_dict = {k: v for v, k in enumerate(all_entities_list)} # Base entity dict
     # Ensure created entity IDs start after existing entity IDs
     e_dict_created = {k: v + len(e_dict) for v, k in enumerate(created_entities_list)}
-    # Combine entity dictionaries
-    e_dict_more = {**e_dict, **e_dict_created}
+    # Combine entity dictionaries for mapping created entities
+    e_dict_more = {**e_dict, **e_dict_created} # Full entity dict (base + created)
     r_dict = {k: v for v, k in enumerate(all_relations_list)}
 
     # --- Map IRIs to IDs ---
-    # Need to handle potential missing keys if filtering happened before dict creation
-    tbox_name['h'] = tbox_name['h'].map(c_dict.get)
-    tbox_name['r'] = tbox_name['r'].map(r_dict.get)
-    tbox_name['t'] = tbox_name['t'].map(c_dict.get)
-    tbox_name.dropna(inplace=True) # Remove rows where mapping failed
-    tbox_name = tbox_name.astype(int)
+    # Map dataframes using the final dictionaries
+    if not tbox_name.empty:
+        tbox_name['h'] = tbox_name['h'].map(c_dict.get)
+        tbox_name['r'] = tbox_name['r'].map(r_dict.get)
+        tbox_name['t'] = tbox_name['t'].map(c_dict.get)
+        tbox_name.dropna(inplace=True) # Remove rows where mapping failed
+        tbox_name = tbox_name.astype(np.int64) # Convert to int64
 
-    abox_ec['h'] = abox_ec['h'].map(e_dict.get)
-    abox_ec['r'] = abox_ec['r'].map(r_dict.get)
-    abox_ec['t'] = abox_ec['t'].map(c_dict.get)
-    abox_ec.dropna(inplace=True)
-    abox_ec = abox_ec.astype(int)
+    if not abox_ec.empty:
+        abox_ec['h'] = abox_ec['h'].map(e_dict.get) # Map to base entity IDs
+        abox_ec['r'] = abox_ec['r'].map(r_dict.get)
+        abox_ec['t'] = abox_ec['t'].map(c_dict.get)
+        abox_ec.dropna(inplace=True)
+        abox_ec = abox_ec.astype(np.int64)
 
-    abox_ec_created['h'] = abox_ec_created['h'].map(e_dict_more.get)
-    abox_ec_created['t'] = abox_ec_created['t'].map(c_dict.get)
-    abox_ec_created.dropna(inplace=True)
-    abox_ec_created = abox_ec_created.astype(int)
+    if not abox_ec_created.empty:
+        abox_ec_created['h'] = abox_ec_created['h'].map(e_dict_more.get) # Map to combined entity IDs
+        abox_ec_created['t'] = abox_ec_created['t'].map(c_dict.get)
+        abox_ec_created.dropna(inplace=True)
+        abox_ec_created = abox_ec_created.astype(np.int64)
 
-    abox_ee['h'] = abox_ee['h'].map(e_dict.get)
-    abox_ee['r'] = abox_ee['r'].map(r_dict.get)
-    abox_ee['t'] = abox_ee['t'].map(e_dict.get)
-    abox_ee.dropna(inplace=True)
-    abox_ee = abox_ee.astype(int)
+    if not abox_ee.empty:
+        abox_ee['h'] = abox_ee['h'].map(e_dict.get) # Map to base entity IDs
+        abox_ee['r'] = abox_ee['r'].map(r_dict.get)
+        abox_ee['t'] = abox_ee['t'].map(e_dict.get) # Map to base entity IDs
+        abox_ee.dropna(inplace=True)
+        abox_ee = abox_ee.astype(np.int64)
 
     # --- Split ABox EE (GGI data) ---
-    # Use the loaded abox_ee for train/test split
-    # This replaces the previous loading of separate train/test files
-    # Simple random split for demonstration. Consider using predefined splits if available.
+    # Use the mapped abox_ee for train/test split
     if len(abox_ee) > 0:
         abox_ee_test = abox_ee.sample(frac=0.2, random_state=42) # Use a fixed state for reproducibility
         abox_ee_train = abox_ee.drop(abox_ee_test.index)
     else:
-        abox_ee_train = pd.DataFrame(columns=['h', 'r', 't'])
-        abox_ee_test = pd.DataFrame(columns=['h', 'r', 't'])
+        abox_ee_train = pd.DataFrame(columns=['h', 'r', 't']).astype(np.int64) # Ensure correct dtype even if empty
+        abox_ee_test = pd.DataFrame(columns=['h', 'r', 't']).astype(np.int64)
 
     # Create already known dictionaries for evaluation filtering
     already_ts_dict = {}
     already_hs_dict = {}
     if not abox_ee_train.empty:
-        already_ts = abox_ee_train.groupby(['h', 'r'])['t'].apply(list).reset_index(name='ts').values
-        already_hs = abox_ee_train.groupby(['t', 'r'])['h'].apply(list).reset_index(name='hs').values
+        # Ensure correct types before grouping
+        already_ts_df = abox_ee_train.astype({'h': int, 'r': int, 't': int})
+        already_ts = already_ts_df.groupby(['h', 'r'])['t'].apply(list).reset_index(name='ts').values
+        already_hs = already_ts_df.groupby(['t', 'r'])['h'].apply(list).reset_index(name='hs').values
         for record in already_ts:
-            # Ensure keys are integers
             already_ts_dict[(int(record[0]), int(record[1]))] = [int(x) for x in record[2]]
         for record in already_hs:
-            # Ensure keys are integers
             already_hs_dict[(int(record[0]), int(record[1]))] = [int(x) for x in record[2]]
 
     # Note: The original el.py had separate valid/test sets. This simplified version only has train/test.
@@ -275,7 +285,8 @@ class GGIDataset(torch.utils.data.Dataset):
         self.cfg = cfg
         # self.e_dict = e_dict # No longer needed directly
         self.e_dict_len = e_dict_len
-        self.data = torch.tensor(data.values)
+        # Ensure data is int64 before converting to tensor
+        self.data = torch.tensor(data.astype(np.int64).values)
         self.all_candidate = torch.arange(self.e_dict_len).unsqueeze(dim=-1)
         self.neg_shape = torch.zeros(self.cfg.num_ng//2, 1, dtype=torch.long) # Match tensor type
         self.already_ts_dict = already_ts_dict
@@ -292,46 +303,40 @@ class GGIDataset(torch.utils.data.Dataset):
         # Efficient negative sampling avoiding known positives
         neg_pool_t = torch.ones(self.e_dict_len, dtype=torch.bool)
         if len(already_ts) > 0:
-             neg_pool_t[already_ts] = 0
+             # Ensure indices are within bounds
+             valid_indices_t = already_ts[already_ts < self.e_dict_len]
+             neg_pool_t[valid_indices_t] = 0
+        neg_pool_t[tail.item()] = 0 # Exclude positive tail itself
         neg_pool_t = neg_pool_t.nonzero().squeeze() # Get indices where value is True
 
         neg_pool_h = torch.ones(self.e_dict_len, dtype=torch.bool)
         if len(already_hs) > 0:
-            neg_pool_h[already_hs] = 0
+            # Ensure indices are within bounds
+            valid_indices_h = already_hs[already_hs < self.e_dict_len]
+            neg_pool_h[valid_indices_h] = 0
+        neg_pool_h[head.item()] = 0 # Exclude positive head itself
         neg_pool_h = neg_pool_h.nonzero().squeeze()
 
-        # Handle cases where pool might be empty (shouldn't happen in dense KGs)
-        num_neg_t = len(neg_pool_t) if neg_pool_t.dim() > 0 else 0
-        num_neg_h = len(neg_pool_h) if neg_pool_h.dim() > 0 else 0
+        # Handle cases where pool might be empty or have only one element
+        num_neg_t = neg_pool_t.numel()
+        num_neg_h = neg_pool_h.numel()
 
-        neg_t_indices = torch.randint(num_neg_t, (self.cfg.num_ng//2,)) if num_neg_t > 0 else torch.tensor([], dtype=torch.long)
-        neg_h_indices = torch.randint(num_neg_h, (self.cfg.num_ng//2,)) if num_neg_h > 0 else torch.tensor([], dtype=torch.long)
+        # Sample with replacement if pool is smaller than required negatives
+        num_to_sample = self.cfg.num_ng // 2
+        neg_t = neg_pool_t[torch.randint(num_neg_t, (num_to_sample,))] if num_neg_t > 0 else torch.tensor([], dtype=torch.long)
+        neg_h = neg_pool_h[torch.randint(num_neg_h, (num_to_sample,))] if num_neg_h > 0 else torch.tensor([], dtype=torch.long)
 
-        neg_t = neg_pool_t[neg_t_indices].unsqueeze(-1) if num_neg_t > 0 else torch.zeros((0, 1), dtype=torch.long)
-        neg_h = neg_pool_h[neg_h_indices].unsqueeze(-1) if num_neg_h > 0 else torch.zeros((0, 1), dtype=torch.long)
+        # Reshape to expected column vector
+        neg_t = neg_t.view(num_to_sample, 1)
+        neg_h = neg_h.view(num_to_sample, 1)
 
-        # If not enough negatives found, pad with random samples (less ideal)
-        # This part needs careful handling based on how many negatives are strictly required
-        num_needed = self.cfg.num_ng // 2
-        if len(neg_t) < num_needed:
-             # Sample randomly, excluding the positive tail
-             random_negs = torch.randint(self.e_dict_len, (num_needed - len(neg_t),))
-             # Very basic exclusion, might still sample known positives if not in 'already_ts'
-             random_negs = random_negs[random_negs != tail.item()]
-             neg_t = torch.cat([neg_t, random_negs.unsqueeze(-1)], dim=0) if len(random_negs) > 0 else neg_t
-             # Ensure correct size if still too few
-             if len(neg_t) < num_needed:
-                 neg_t = torch.cat([neg_t, torch.randint(self.e_dict_len, (num_needed - len(neg_t), 1))], dim=0)
+        # Fallback if pool was empty (should be rare)
+        if num_neg_t == 0:
+            neg_t = torch.randint(self.e_dict_len, (num_to_sample, 1), dtype=torch.long)
+        if num_neg_h == 0:
+            neg_h = torch.randint(self.e_dict_len, (num_to_sample, 1), dtype=torch.long)
 
-
-        if len(neg_h) < num_needed:
-             random_negs = torch.randint(self.e_dict_len, (num_needed - len(neg_h),))
-             random_negs = random_negs[random_negs != head.item()]
-             neg_h = torch.cat([neg_h, random_negs.unsqueeze(-1)], dim=0) if len(random_negs) > 0 else neg_h
-             if len(neg_h) < num_needed:
-                 neg_h = torch.cat([neg_h, torch.randint(self.e_dict_len, (num_needed - len(neg_h), 1))], dim=0)
-
-        return neg_t[:num_needed], neg_h[:num_needed] # Ensure correct size
+        return neg_t, neg_h
 
     def __len__(self):
         return len(self.data)
@@ -379,7 +384,8 @@ class AboxECDataset(torch.utils.data.Dataset):
         self.cfg = cfg
         # self.e_dict = e_dict
         self.e_dict_len = e_dict_len
-        self.data = torch.tensor(data.values)
+        # Ensure data is int64 before converting to tensor
+        self.data = torch.tensor(data.astype(np.int64).values)
         self.all_candidate = torch.arange(self.e_dict_len).unsqueeze(dim=-1)
         self.neg_shape = torch.zeros(self.cfg.num_ng, 1, dtype=torch.long) # Match type
 
@@ -407,12 +413,14 @@ class AboxECCreatedDataset(torch.utils.data.Dataset):
         super().__init__()
         self.cfg = cfg
         # self.e_dict = e_dict # Use length
-        self.e_dict_len = e_dict_len
+        self.e_dict_len = e_dict_len # This should be e_dict_more_len (base + created)
         self.c_dict_len = c_dict_len # Need concept length if sampling concepts
-        self.data = torch.tensor(data.values) # Shape (N, 2): entity_h, concept_t
+        # Ensure data is int64 before converting to tensor
+        self.data = torch.tensor(data.astype(np.int64).values) # Shape (N, 2): entity_h, concept_t
 
         # Decide what to sample: negative entities or negative concepts?
         # Original code sampled negative *heads* (entities) for EC axioms. Let's stick to that.
+        # Sample from the full range of entities (base + created)
         self.all_candidate_entities = torch.arange(self.e_dict_len).unsqueeze(dim=-1)
         self.neg_shape = torch.zeros(self.cfg.num_ng, 1, dtype=torch.long)
 
@@ -424,7 +432,7 @@ class AboxECCreatedDataset(torch.utils.data.Dataset):
         pos_h = pos[0]
         pos_t = pos[1]
 
-        # Sample negative entities (heads)
+        # Sample negative entities (heads) from the full entity range
         neg_entities = torch.randint(self.e_dict_len, (self.cfg.num_ng, 1), dtype=torch.long)
 
         # Expand the positive concept
@@ -441,7 +449,11 @@ class AboxECCreatedDataset(torch.utils.data.Dataset):
 class NaiveDataset(torch.utils.data.Dataset):
     def __init__(self, data):
         super().__init__()
-        self.data = data
+        # Data could be a list (tbox_desc) or tensor (tbox_name)
+        if isinstance(data, torch.Tensor):
+            self.data = data
+        else:
+            self.data = data # Keep as list if it's tbox_desc strings
 
     def __len__(self):
         return len(self.data)
@@ -652,45 +664,19 @@ class FALCON(torch.nn.Module):
 
     # --- Forward Pass for Axioms ---
     # This method now relies on the input `axiom` being the reconstructed functional syntax string
-    def forward(self, axiom_str, anon_e_emb):
+    def forward(self, axiom_str, anon_e_emb, c_dict, r_dict): # Pass dicts explicitly for lookup
         # Get combined entity embeddings for this forward pass
         all_e_emb = self._get_all_entity_embeddings(anon_e_emb)
 
         # --- Recursive Parsing and Calculation ---
-        # This part remains largely the same, operating on the reconstructed string `axiom_str`
-        # It needs the IRI->ID dictionaries (c_dict, r_dict) to get embedding indices.
-        # These dictionaries should be stored in `self` during __init__ if this approach is used.
-        # *** Correction: The current code gets IDs *outside* forward (e.g., in forward_name).
-        # *** Let's assume forward receives the *axiom string* and looks up IDs internally.
-        # *** This requires storing c_dict, r_dict in self.
-
-        # Store dictionaries if needed (Add to __init__)
-        # self.c_dict = c_dict
-        # self.r_dict = r_dict
-
         # --- Base Cases ---
         if axiom_str[0] == '<' or axiom_str == 'owl:Thing':
             try:
-                # Use stored dictionary (assuming it exists)
-                # c_id = torch.tensor(self.c_dict[axiom_str]).to(self.device)
-                # Need c_dict available here! Pass it or store it.
-                # Let's assume c_dict is available globally or passed somehow for now.
-                # *** Revised approach: Pass dicts to forward if not storing in self ***
-                # def forward(self, axiom_str, anon_e_emb, c_dict, r_dict):
-                # c_id = torch.tensor(c_dict[axiom_str]).to(self.device)
-
-                # *** Safest approach: Modify callers (forward_name, etc.) to pass IDs ***
-                # *** OR: Keep the original structure where forward *only* handles structure ***
-                # *** and IDs are looked up *before* calling forward. This seems best.      ***
-                # *** Let's revert `forward` to assume it gets called recursively with strings, ***
-                # *** and the initial call (e.g. from loss calculation) handles the top-level ID lookup. ***
-
-                # If forward is called with a concept IRI string:
-                if axiom_str not in c_dict: # Use global c_dict for check
+                # Use passed dictionaries for lookup
+                if axiom_str not in c_dict:
                      print(f"Warning: Concept IRI '{axiom_str}' not in c_dict during forward.")
-                     # Return fuzzy set for Nothing or handle error
-                     return self.nothing_fs
-                c_id = torch.tensor(c_dict[axiom_str]).to(self.device) # Use global c_dict
+                     return self.nothing_fs.clone() # Return a clone to avoid in-place issues
+                c_id = torch.tensor(c_dict[axiom_str]).to(self.device)
                 c_emb = self.c_embedding(c_id)
                 # Use checkpointing if needed
                 # ret = self._get_c_fs(c_emb, all_e_emb)
@@ -698,11 +684,11 @@ class FALCON(torch.nn.Module):
                 return ret
             except KeyError:
                  print(f"Error: Concept IRI '{axiom_str}' not found in c_dict during forward.")
-                 return self.nothing_fs # Return fuzzy set for Nothing
+                 return self.nothing_fs.clone()
 
 
         elif axiom_str == 'owl:Nothing':
-            return self.nothing_fs
+            return self.nothing_fs.clone()
 
         # --- Recursive Steps ---
         # These rely on string parsing and recursive calls to self.forward
@@ -718,19 +704,23 @@ class FALCON(torch.nn.Module):
                 elif char == ' ' and paren_level == 0:
                     split_index = i
                     break
-            if split_index == -1: raise ValueError(f"Cannot parse ObjectIntersectionOf: {axiom_str}")
+            if split_index == -1:
+                # Handle cases like ObjectIntersectionOf(<C>) which might occur if parsing is imperfect
+                if paren_level == 0 and content.strip(): # Check if content exists after stripping
+                    left_str = content.strip()
+                    # This is not really an intersection, just return the FS of the single element
+                    return self.forward(left_str, anon_e_emb, c_dict, r_dict)
+                else:
+                    print(f"Error: Cannot parse ObjectIntersectionOf: {axiom_str}")
+                    return self.nothing_fs.clone()
+
 
             left_str = content[:split_index].strip()
             right_str = content[split_index:].strip()
 
-            # Handle multiple intersections (A and B and C...) - assuming right-associativity from get_rights
-            # The reconstruction might produce nested intersections or just pairs.
-            # Assume pairs for now, consistent with reconstruction.
-            # If get_rights logic is needed, it must be added back here or in reconstruction.
-            fs_left = self.forward(left_str, anon_e_emb)
-            fs_right = self.forward(right_str, anon_e_emb)
+            fs_left = self.forward(left_str, anon_e_emb, c_dict, r_dict)
+            fs_right = self.forward(right_str, anon_e_emb, c_dict, r_dict)
             return self._logical_and(fs_left, fs_right)
-            # TODO: Adapt if reconstruction produces different structures or if get_rights is needed.
 
 
         elif axiom_str.startswith('ObjectUnionOf('):
@@ -744,55 +734,104 @@ class FALCON(torch.nn.Module):
                 elif char == ' ' and paren_level == 0:
                     split_index = i
                     break
-            if split_index == -1: raise ValueError(f"Cannot parse ObjectUnionOf: {axiom_str}")
+            if split_index == -1:
+                if paren_level == 0 and content.strip():
+                    left_str = content.strip()
+                    return self.forward(left_str, anon_e_emb, c_dict, r_dict)
+                else:
+                    print(f"Error: Cannot parse ObjectUnionOf: {axiom_str}")
+                    return self.nothing_fs.clone()
+
             left_str = content[:split_index].strip()
             right_str = content[split_index:].strip()
-            fs_left = self.forward(left_str, anon_e_emb)
-            fs_right = self.forward(right_str, anon_e_emb)
+            fs_left = self.forward(left_str, anon_e_emb, c_dict, r_dict)
+            fs_right = self.forward(right_str, anon_e_emb, c_dict, r_dict)
             return self._logical_or(fs_left, fs_right)
 
 
         elif axiom_str.startswith('ObjectSomeValuesFrom('):
             # Format: ObjectSomeValuesFrom(<R> C)
-            parts = axiom_str[21:-1].split(' ', 1) # Split only on the first space
+            content = axiom_str[21:-1].strip()
+            parts = []
+            current_part = ""
+            paren_level = 0
+            in_iri = False
+            for char in content:
+                if char == '<' and not in_iri: in_iri = True
+                elif char == '>' and in_iri: in_iri = False
+                elif char == '(' : paren_level += 1
+                elif char == ')' : paren_level -= 1
+
+                if char == ' ' and paren_level == 0 and not in_iri and current_part:
+                    parts.append(current_part)
+                    current_part = ""
+                else:
+                    current_part += char
+            if current_part: parts.append(current_part) # Add the last part
+
+            if len(parts) != 2:
+                print(f"Error: Cannot parse ObjectSomeValuesFrom parts: {axiom_str}")
+                return self.nothing_fs.clone()
+
             relation_iri = parts[0]
             concept_str = parts[1]
-            if relation_iri not in r_dict: # Use global r_dict
+            if relation_iri not in r_dict:
                  print(f"Warning: Relation IRI '{relation_iri}' not in r_dict during forward.")
-                 return self.nothing_fs
-            r_id = torch.tensor(r_dict[relation_iri]).to(self.device) # Use global r_dict
+                 return self.nothing_fs.clone()
+            r_id = torch.tensor(r_dict[relation_iri]).to(self.device)
             r_emb = self.r_embedding(r_id)
             # r_fs = self._get_r_fs(r_emb, all_e_emb)
             r_fs = checkpoint.checkpoint(self._get_r_fs, r_emb, all_e_emb, use_reentrant=False)
-            c_fs = self.forward(concept_str, anon_e_emb)
+            c_fs = self.forward(concept_str, anon_e_emb, c_dict, r_dict)
             return self._logical_exist(r_fs, c_fs)
 
 
         elif axiom_str.startswith('ObjectAllValuesFrom('):
             # Format: ObjectAllValuesFrom(<R> C)
-            parts = axiom_str[20:-1].split(' ', 1)
+            content = axiom_str[20:-1].strip()
+            parts = []
+            current_part = ""
+            paren_level = 0
+            in_iri = False
+            for char in content:
+                if char == '<' and not in_iri: in_iri = True
+                elif char == '>' and in_iri: in_iri = False
+                elif char == '(' : paren_level += 1
+                elif char == ')' : paren_level -= 1
+
+                if char == ' ' and paren_level == 0 and not in_iri and current_part:
+                    parts.append(current_part)
+                    current_part = ""
+                else:
+                    current_part += char
+            if current_part: parts.append(current_part) # Add the last part
+
+            if len(parts) != 2:
+                print(f"Error: Cannot parse ObjectAllValuesFrom parts: {axiom_str}")
+                return self.nothing_fs.clone()
+
             relation_iri = parts[0]
             concept_str = parts[1]
-            if relation_iri not in r_dict: # Use global r_dict
+            if relation_iri not in r_dict:
                  print(f"Warning: Relation IRI '{relation_iri}' not in r_dict during forward.")
-                 return self.nothing_fs
-            r_id = torch.tensor(r_dict[relation_iri]).to(self.device) # Use global r_dict
+                 return self.nothing_fs.clone()
+            r_id = torch.tensor(r_dict[relation_iri]).to(self.device)
             r_emb = self.r_embedding(r_id)
             # r_fs = self._get_r_fs(r_emb, all_e_emb)
             r_fs = checkpoint.checkpoint(self._get_r_fs, r_emb, all_e_emb, use_reentrant=False)
-            c_fs = self.forward(concept_str, anon_e_emb)
+            c_fs = self.forward(concept_str, anon_e_emb, c_dict, r_dict)
             return self._logical_forall(r_fs, c_fs)
 
 
         elif axiom_str.startswith('ObjectComplementOf('):
             concept_str = axiom_str[19:-1]
-            fs = self.forward(concept_str, anon_e_emb)
+            fs = self.forward(concept_str, anon_e_emb, c_dict, r_dict)
             return self._logical_not(fs)
 
         else:
             print(f"Error: Unrecognized axiom structure in forward: {axiom_str}")
             # raise ValueError(f"Unrecognized axiom structure: {axiom_str}")
-            return self.nothing_fs # Or some default error state
+            return self.nothing_fs.clone() # Or some default error state
 
 
     # --- Loss Functions ---
@@ -820,7 +859,8 @@ class FALCON(torch.nn.Module):
             # Maximize 1 - max(intersection) => Minimize max(intersection)
             # Loss = -log(1 - max(intersection) + epsilon)
             max_val = fs_intersection.max(dim=-1)[0]
-            return -torch.log(1 - max_val + 1e-10)
+            # Clamp max_val to prevent log(0) -> NaN
+            return -torch.log(1 - max_val + 1e-12)
         elif self.max_measure.startswith('pmean'):
             # Loss = -log(1 - pmean(intersection) + epsilon)
             try:
@@ -828,7 +868,7 @@ class FALCON(torch.nn.Module):
             except ValueError:
                 raise ValueError(f"Invalid pmean value: {self.max_measure}")
             pmean_val = ((fs_intersection ** p).mean(dim=-1))**(1/p)
-            return -torch.log(1 - pmean_val + 1e-10)
+            return -torch.log(1 - pmean_val + 1e-12)
         else:
             raise ValueError(f"Unknown max_measure: {self.max_measure}")
 
@@ -843,7 +883,14 @@ class FALCON(torch.nn.Module):
         # Entity embeddings need careful indexing - they might be base or anonymous
         # The current dataloader samples negative *heads* from base entities.
         # Let's assume h_id refers to indices in the base embedding table.
-        e_emb = self.e_embedding_base(x[:, :, 0]) # Shape: [batch, 1+neg, dim]
+        # Ensure indices are within the valid range for e_embedding_base
+        entity_ids = x[:, :, 0]
+        max_base_id = self.e_embedding_base.num_embeddings - 1
+        if torch.any(entity_ids > max_base_id):
+            print(f"Warning: ABox EC entity ID {entity_ids.max().item()} exceeds base embedding size {max_base_id+1}. Clamping.")
+            entity_ids = torch.clamp(entity_ids, max=max_base_id)
+
+        e_emb = self.e_embedding_base(entity_ids) # Shape: [batch, 1+neg, dim]
         r_emb = self.r_embedding(x[:, 0, 1])      # Shape: [batch, dim] (relation is same for pos/neg)
         c_emb = self.c_embedding(x[:, 0, 2])      # Shape: [batch, dim] (concept is same for pos/neg)
 
@@ -862,18 +909,20 @@ class FALCON(torch.nn.Module):
         # Get membership degree for positive and negative entities
         # Need to gather the membership degree for the specific entities in the batch
         # x[:, :, 0] contains the entity IDs (indices for e_embedding_base)
-        entity_ids = x[:, :, 0] # Shape: [batch, 1+neg]
+        # entity_ids = x[:, :, 0] # Shape: [batch, 1+neg] # Already defined and clamped
 
         # Gather corresponding values from exists_rc_fs
         # exists_rc_fs has shape [batch, n_entity_total]
         # entity_ids has shape [batch, 1+neg]
         # We need to select using batch indices and entity indices
-        batch_indices = torch.arange(x.size(0)).unsqueeze(1).expand_as(entity_ids) # Shape: [batch, 1+neg]
-        dofm = exists_rc_fs[batch_indices, entity_ids] # Shape: [batch, 1+neg]
+        batch_indices = torch.arange(x.size(0), device=self.device).unsqueeze(1).expand_as(entity_ids) # Shape: [batch, 1+neg]
+        # Ensure entity_ids are within the bounds of exists_rc_fs's second dimension
+        entity_ids_clamped_total = torch.clamp(entity_ids, max=self.n_entity_total - 1)
+        dofm = exists_rc_fs[batch_indices, entity_ids_clamped_total] # Shape: [batch, 1+neg]
 
         # Calculate classification loss
-        loss_pos = -torch.log(dofm[:, 0] + 1e-10)       # Positive samples
-        loss_neg = -torch.log(1 - dofm[:, 1:] + 1e-10) # Negative samples
+        loss_pos = -torch.log(dofm[:, 0] + 1e-12)       # Positive samples
+        loss_neg = -torch.log(1 - dofm[:, 1:] + 1e-12) # Negative samples
         return (loss_pos.mean() + loss_neg.mean()) / 2
 
     def forward_abox_ec_created(self, x):
@@ -885,6 +934,12 @@ class FALCON(torch.nn.Module):
         # Entity IDs can be base or created. Need combined embedding lookup.
         entity_ids = x[:, :, 0] # Shape: [batch, 1+neg]
         concept_ids = x[:, 0, 1] # Shape: [batch] (concept is same for pos/neg)
+
+        # Ensure entity IDs are within the valid range for e_embedding_base
+        max_base_id = self.e_embedding_base.num_embeddings - 1
+        if torch.any(entity_ids > max_base_id):
+            print(f"Warning: ABox EC Created entity ID {entity_ids.max().item()} exceeds base embedding size {max_base_id+1}. Clamping.")
+            entity_ids = torch.clamp(entity_ids, max=max_base_id)
 
         # Get embeddings
         # Use e_embedding_base directly as IDs should correspond to its indices
@@ -901,8 +956,8 @@ class FALCON(torch.nn.Module):
         if self.cfg.loss_type == 'c': # Classification loss
             # dofm = torch.sigmoid(self.fc_1(torch.nn.functional.leaky_relu(self.fc_0(emb), negative_slope=0.1))).squeeze(dim=-1)
             dofm = torch.sigmoid(self.fc_0(emb)).squeeze(dim=-1) # Shape: [batch, 1+neg]
-            loss_pos = -torch.log(dofm[:, 0] + 1e-10)
-            loss_neg = -torch.log(1 - dofm[:, 1:] + 1e-10)
+            loss_pos = -torch.log(dofm[:, 0] + 1e-12)
+            loss_neg = -torch.log(1 - dofm[:, 1:] + 1e-12)
             return (loss_pos.mean() + loss_neg.mean()) / 2
         elif self.cfg.loss_type == 'r': # Ranking loss
             # scores = self.fc_1(torch.nn.functional.leaky_relu(self.fc_0(emb), negative_slope=0.1)).squeeze(dim=-1)
@@ -921,9 +976,26 @@ class FALCON(torch.nn.Module):
         # x shape: [num_eval_triples, 3] for test (where num_eval_triples = num_entities * 2)
 
         # Assume h, r, t IDs refer to base embeddings
-        e1_emb = self.e_embedding_base(x[:, :, 0]) # Head embeddings
-        r_emb = self.r_embedding(x[:, :, 1])       # Relation embeddings
-        e2_emb = self.e_embedding_base(x[:, :, 2]) # Tail embeddings
+        # Ensure indices are within the valid range for embeddings
+        h_ids = x[:, :, 0]
+        r_ids = x[:, :, 1]
+        t_ids = x[:, :, 2]
+        max_base_id = self.e_embedding_base.num_embeddings - 1
+        max_rel_id = self.r_embedding.num_embeddings - 1
+
+        if torch.any(h_ids > max_base_id):
+            print(f"Warning: GGI head ID {h_ids.max().item()} exceeds base embedding size {max_base_id+1}. Clamping.")
+            h_ids = torch.clamp(h_ids, max=max_base_id)
+        if torch.any(t_ids > max_base_id):
+            print(f"Warning: GGI tail ID {t_ids.max().item()} exceeds base embedding size {max_base_id+1}. Clamping.")
+            t_ids = torch.clamp(t_ids, max=max_base_id)
+        if torch.any(r_ids > max_rel_id):
+            print(f"Warning: GGI relation ID {r_ids.max().item()} exceeds relation embedding size {max_rel_id+1}. Clamping.")
+            r_ids = torch.clamp(r_ids, max=max_rel_id)
+
+        e1_emb = self.e_embedding_base(h_ids) # Head embeddings
+        r_emb = self.r_embedding(r_ids)       # Relation embeddings
+        e2_emb = self.e_embedding_base(t_ids) # Tail embeddings
 
         # Score using a DistMult-like approach (or TransE if adapted)
         # Original code uses: score(h+r, t)
@@ -933,8 +1005,8 @@ class FALCON(torch.nn.Module):
             if self.cfg.loss_type == 'c': # Classification loss
                 # dofm = torch.sigmoid(self.fc_1(torch.nn.functional.leaky_relu(self.fc_0(emb), negative_slope=0.1))).squeeze(dim=-1)
                 dofm = torch.sigmoid(self.fc_0(emb)).squeeze(dim=-1) # Shape: [batch, 1+neg]
-                loss_pos = -torch.log(dofm[:, 0] + 1e-10)
-                loss_neg = -torch.log(1 - dofm[:, 1:] + 1e-10)
+                loss_pos = -torch.log(dofm[:, 0] + 1e-12)
+                loss_neg = -torch.log(1 - dofm[:, 1:] + 1e-12)
                 return (loss_pos.mean() + loss_neg.mean()) / 2
             elif self.cfg.loss_type == 'r': # Ranking loss
                 # scores = self.fc_1(torch.nn.functional.leaky_relu(self.fc_0(emb), negative_slope=0.1)).squeeze(dim=-1)
@@ -961,21 +1033,37 @@ def get_ranks(logits, y, already_ts_dict, already_hs_dict, flag):
     # y: the positive triple (h, r, t) as tensor
     # flag: 'head' or 'tail' prediction
 
-    logits_sorted_indices = torch.argsort(logits.cpu(), dim=-1, descending=True)
+    # Ensure logits are on CPU for argsort and processing
+    logits_cpu = logits.cpu()
+    y_cpu = y.cpu()
+
+    logits_sorted_indices = torch.argsort(logits_cpu, dim=-1, descending=True)
 
     if flag == 'head':
-        true_entity_id = y[0].item() # True head ID
+        true_entity_id = y_cpu[0].item() # True head ID
         # Find rank of the true head
-        rank_raw = (logits_sorted_indices == true_entity_id).nonzero(as_tuple=True)[0].item() + 1
+        rank_raw_tensor = (logits_sorted_indices == true_entity_id).nonzero(as_tuple=True)[0]
+        if rank_raw_tensor.numel() == 0:
+             print(f"Warning: True head entity {true_entity_id} not found in prediction indices for triple {y_cpu.tolist()}. Assigning lowest rank.")
+             rank_raw = logits_cpu.numel() # Assign worst possible rank
+        else:
+             rank_raw = rank_raw_tensor.item() + 1
+
         # Get entities to filter (known objects for this ?h, r, t query)
-        filter_key = (y[2].item(), y[1].item()) # (tail, relation)
+        filter_key = (y_cpu[2].item(), y_cpu[1].item()) # (tail, relation)
         already = set(already_hs_dict.get(filter_key, []))
     elif flag == 'tail':
-        true_entity_id = y[2].item() # True tail ID
+        true_entity_id = y_cpu[2].item() # True tail ID
         # Find rank of the true tail
-        rank_raw = (logits_sorted_indices == true_entity_id).nonzero(as_tuple=True)[0].item() + 1
+        rank_raw_tensor = (logits_sorted_indices == true_entity_id).nonzero(as_tuple=True)[0]
+        if rank_raw_tensor.numel() == 0:
+             print(f"Warning: True tail entity {true_entity_id} not found in prediction indices for triple {y_cpu.tolist()}. Assigning lowest rank.")
+             rank_raw = logits_cpu.numel() # Assign worst possible rank
+        else:
+             rank_raw = rank_raw_tensor.item() + 1
+
         # Get entities to filter (known objects for this h, r, ?t query)
-        filter_key = (y[0].item(), y[1].item()) # (head, relation)
+        filter_key = (y_cpu[0].item(), y_cpu[1].item()) # (head, relation)
         already = set(already_ts_dict.get(filter_key, []))
     else:
         raise ValueError("flag must be 'head' or 'tail'")
@@ -1012,15 +1100,15 @@ def ggi_evaluate(model, loader, e_dict_len, device, already_ts_dict, already_hs_
             loader_iter = loader
 
         for X, y in loader_iter:
-            X = X.to(device) # Shape [2 * num_entities, 3]
-            y = y.to(device) # Shape [1, 3] -> squeeze -> [3]
-            y_squeezed = y.squeeze(0)
+            # X shape [1, 2 * num_entities, 3] -> squeeze -> [2 * num_entities, 3]
+            # y shape [1, 3] -> squeeze -> [3]
+            X = X.squeeze(0).to(device)
+            y_squeezed = y.squeeze(0).to(device)
 
             # Ensure model is compatible (adjust if using other KGE models)
             if model.__class__.__name__ == 'FALCON':
-                logits = model.forward_ggi(X, stage='test') # Shape [2 * num_entities]
-            # elif model.__class__.__name__ == 'KGCModel': # Example for other models
-            #     logits = model.forward(X).flatten()
+                # Pass X unsqueezed as forward_ggi expects batch dim for test
+                logits = model.forward_ggi(X.unsqueeze(0), stage='test') # Shape [2 * num_entities]
             else:
                  raise TypeError(f"Unsupported model type for ggi_evaluate: {model.__class__.__name__}")
 
@@ -1133,7 +1221,9 @@ if __name__ == '__main__':
     abox_ec_dataset = AboxECDataset(cfg, abox_ec, e_dict_len)
     # Pass e_dict_more_len as it includes created entities which might be sampled as negatives
     abox_ec_created_dataset = AboxECCreatedDataset(cfg, abox_ec_created, e_dict_more_len, c_dict_len)
-    tbox_name_dataset = NaiveDataset(torch.tensor(tbox_name.values)) if not tbox_name.empty else None
+    # Ensure tbox_name data is int64 before creating tensor
+    tbox_name_tensor = torch.tensor(tbox_name.astype(np.int64).values) if not tbox_name.empty else None
+    tbox_name_dataset = NaiveDataset(tbox_name_tensor) if tbox_name_tensor is not None else None
     tbox_desc_dataset = NaiveDataset(tbox_desc) if tbox_desc else None
 
     # --- DataLoader Creation ---
@@ -1179,6 +1269,7 @@ if __name__ == '__main__':
     print(f"Using device: {device}", flush=True)
 
     # Pass dictionary lengths to the model
+    # e_dict_more_len includes base + created entities, which is the size needed for e_embedding_base
     model = FALCON(c_dict_len, e_dict_more_len, r_dict_len, cfg, device)
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
@@ -1199,10 +1290,10 @@ if __name__ == '__main__':
     best_metric = -1.0 # Track best validation metric (e.g., H@10 Filter)
     steps_since_best = 0
 
-    # Global dictionaries needed for forward pass string parsing (make accessible)
-    # This is a workaround for not storing them in the model object itself.
-    global_c_dict = c_dict
-    global_r_dict = r_dict
+    # Make dictionaries accessible for the forward pass within the loop
+    # No need for global, just pass them when calling model.forward for tbox_desc
+    local_c_dict = c_dict
+    local_r_dict = r_dict
 
     for step in ranger:
         model.train()
@@ -1221,21 +1312,28 @@ if __name__ == '__main__':
         with torch.cuda.amp.autocast(enabled=(device.type == 'cuda')):
             # Calculate loss for each available data type
             if 'ggi' in dataloaders:
-                loss_ggi = model.forward_ggi(next(dataloaders['ggi']).to(device).long())
+                # Ensure data is long type
+                ggi_batch = next(dataloaders['ggi']).to(device).long()
+                loss_ggi = model.forward_ggi(ggi_batch)
                 total_loss += loss_ggi * weights['ggi']
                 loss_components['ggi'] = loss_ggi.item()
 
             if 'abox_ec' in dataloaders:
-                loss_abox_ec = model.forward_abox_ec(next(dataloaders['abox_ec']).to(device).long(), anon_e_emb)
+                 # Ensure data is long type
+                abox_ec_batch = next(dataloaders['abox_ec']).to(device).long()
+                loss_abox_ec = model.forward_abox_ec(abox_ec_batch, anon_e_emb)
                 total_loss += loss_abox_ec * weights['abox_ec']
                 loss_components['ec'] = loss_abox_ec.item()
 
             if 'abox_ec_created' in dataloaders:
-                loss_abox_ec_created = model.forward_abox_ec_created(next(dataloaders['abox_ec_created']).to(device).long())
+                 # Ensure data is long type
+                abox_ec_created_batch = next(dataloaders['abox_ec_created']).to(device).long()
+                loss_abox_ec_created = model.forward_abox_ec_created(abox_ec_created_batch)
                 total_loss += loss_abox_ec_created * weights['abox_ec_created']
                 loss_components['ec_cr'] = loss_abox_ec_created.item()
 
             if 'tbox_name' in dataloaders:
+                # Ensure data is long type
                 tbox_name_batch = next(dataloaders['tbox_name']).to(device).long()
                 loss_tbox_name = model.forward_name(tbox_name_batch, anon_e_emb)
                 total_loss += loss_tbox_name * weights['tbox_name']
@@ -1243,11 +1341,9 @@ if __name__ == '__main__':
 
             if 'tbox_desc' in dataloaders:
                 loss_tbox_desc_batch = []
-                # Need global dicts for forward call here
-                c_dict = global_c_dict
-                r_dict = global_r_dict
+                # Pass local dicts to forward call
                 for axiom_str in next(dataloaders['tbox_desc']):
-                    fs = model.forward(axiom_str, anon_e_emb) # Pass reconstructed string
+                    fs = model.forward(axiom_str, anon_e_emb, local_c_dict, local_r_dict) # Pass reconstructed string and dicts
                     loss_tbox_desc_batch.append(model.get_cc_loss(fs))
                 loss_tbox_desc = sum(loss_tbox_desc_batch) / len(loss_tbox_desc_batch) if loss_tbox_desc_batch else torch.tensor(0.0).to(device)
                 total_loss += loss_tbox_desc * weights['tbox_desc']
@@ -1260,27 +1356,32 @@ if __name__ == '__main__':
                 loss = torch.tensor(0.0).to(device) # No loss if no data
 
         # Backpropagation
-        if total_weight > 0:
+        if total_weight > 0 and loss.requires_grad: # Check requires_grad
             scaler.scale(loss).backward()
+            # Gradient clipping (optional but good practice)
+            # scaler.unscale_(optimizer) # Unscale gradients before clipping
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             losses_log.append(loss.item())
         else:
-            losses_log.append(0.0) # Log zero loss if no data
+            losses_log.append(0.0) # Log zero loss if no data or no grad
 
         # Logging loss components (optional)
         if cfg.verbose and (step + 1) % (cfg.valid_interval // 10 + 1) == 0:
              loss_str = ", ".join([f"{k}:{v:.4f}" for k, v in loss_components.items()])
-             ranger.set_postfix_str(f"Loss: {loss.item():.4f} ({loss_str})")
+             current_lr = optimizer.param_groups[0]['lr']
+             ranger.set_postfix_str(f"Loss: {loss.item():.4f} ({loss_str}) LR: {current_lr:.6f}")
 
 
         # --- Validation ---
         if (step + 1) % cfg.valid_interval == 0:
             avg_loss = sum(losses_log) / len(losses_log) if losses_log else 0.0
-            print(f'\nStep {step+1}/{cfg.max_steps} - Avg Loss: {avg_loss:.4f}', flush=True)
+            print(f'\nStep {step+1}/{cfg.max_steps} - Avg Train Loss: {avg_loss:.4f}', flush=True)
             losses_log = [] # Reset loss log
 
             if ggi_dataloader_test:
+                # Pass base entity length for evaluation range
                 mh10_raw, mh100_raw, mh10_filter, mh100_filter = ggi_evaluate(
                     model, ggi_dataloader_test, e_dict_len, device, already_ts_dict, already_hs_dict
                 )
@@ -1315,7 +1416,7 @@ if __name__ == '__main__':
         best_epoch_idx = results_tensor[:, 2].argmax()
         final_results = results_tensor[best_epoch_idx]
         mh10_raw, mh100_raw, mh10_filter, mh100_filter = final_results.tolist()
-        print(f'Best Validation Result (at validation step {best_epoch_idx + 1}):', flush=True)
+        print(f'Best Validation Result (at validation interval {best_epoch_idx + 1}):', flush=True)
         print(f'  H@10 (Raw): {mh10_raw:.3f}\tH@100 (Raw): {mh100_raw:.3f}', flush=True)
         print(f'  H@10 (Filter): {mh10_filter:.3f}\tH@100 (Filter): {mh100_filter:.3f}', flush=True)
     else:
